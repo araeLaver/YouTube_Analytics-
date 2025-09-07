@@ -1,0 +1,48 @@
+{
+  "daily_tasks": [
+    "YouTube Studio 체크",
+    "댓글 응답",
+    "커뮤니티 관리",
+    "콘텐츠 준비"
+  ],
+  "weekly_goals": {
+    "week1": [
+      "채널 설정",
+      "첫 영상 2개",
+      "쇼츠 3개"
+    ],
+    "week2": [
+      "루틴 확립",
+      "네트워킹",
+      "분석 시작"
+    ],
+    "week3": [
+      "최적화",
+      "A/B 테스트",
+      "패턴 분석"
+    ],
+    "week4": [
+      "업로드 증가",
+      "라이브 테스트",
+      "콜라보"
+    ]
+  },
+  "monthly_milestones": {
+    "month1": {
+      "subscribers": 100,
+      "watch_hours": 100
+    },
+    "month2": {
+      "subscribers": 500,
+      "watch_hours": 1000
+    },
+    "month3": {
+      "subscribers": 1000,
+      "watch_hours": 2000
+    },
+    "month6": {
+      "subscribers": 5000,
+      "watch_hours": 4000
+    }
+  }
+}
