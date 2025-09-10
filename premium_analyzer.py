@@ -3,6 +3,7 @@ from flask import Flask, render_template, request, jsonify
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import re
+import os
 from datetime import datetime, timedelta
 import pandas as pd
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -11,7 +12,7 @@ from advanced_features import trend_analyzer, content_engine, competitor_analyze
 
 app = Flask(__name__)
 
-API_KEY = "AIzaSyB-QbLMxVL-RmGK9j21HkIGrg3bjRs871E"
+API_KEY = os.environ.get('YOUTUBE_API_KEY', 'AIzaSyB-QbLMxVL-RmGK9j21HkIGrg3bjRs871E')
 
 class PremiumYouTubeAnalyzer:
     def __init__(self, api_key):
@@ -2416,11 +2417,14 @@ def advanced_analytics():
         return jsonify({'error': f'고급 분석 중 오류 발생: {str(e)}'})
 
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8080))
+    debug_mode = os.environ.get('FLASK_ENV') != 'production'
+    
     print("=" * 60)
     print("YouTube Analytics Studio 시작")
     print("=" * 60)
-    print("주소: http://localhost:8080")
+    print(f"주소: http://localhost:{port}")
     print("프리미엄 분석 및 상세 리포트")
     print("=" * 60)
     
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
