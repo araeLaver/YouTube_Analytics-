@@ -1,0 +1,1 @@
+web: python premium_analyzer.py
