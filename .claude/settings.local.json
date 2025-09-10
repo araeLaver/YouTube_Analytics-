@@ -20,7 +20,8 @@
       "Bash(mv:*)",
       "Bash(git rm:*)",
       "Bash(/bashes)",
-      "Bash(git restore:*)"
+      "Bash(git restore:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

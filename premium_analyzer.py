@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
+from advanced_features import trend_analyzer, content_engine, competitor_analyzer, sentiment_analyzer
 
 app = Flask(__name__)
 
@@ -2115,6 +2116,102 @@ def get_video_script():
         
     except Exception as e:
         return jsonify({'error': f'스크립트 가져오기 중 오류 발생: {str(e)}'})
+
+@app.route('/api/korean_trends', methods=['GET'])
+def korean_trends():
+    """한국어 트렌드 분석 API"""
+    try:
+        trends = trend_analyzer.get_trending_keywords()
+        return jsonify(trends)
+    except Exception as e:
+        return jsonify({'error': f'트렌드 분석 중 오류 발생: {str(e)}'})
+
+@app.route('/api/content_recommendations', methods=['POST'])
+def content_recommendations():
+    """AI 콘텐츠 추천 API"""
+    try:
+        data = request.get_json()
+        channel_category = data.get('category', '일반')
+        subscriber_count = data.get('subscriber_count', 0)
+        
+        # 트렌딩 키워드 가져오기
+        trends = trend_analyzer.get_trending_keywords()
+        trending_keywords = trends['trending_keywords']
+        
+        # 콘텐츠 추천 생성
+        recommendations = content_engine.generate_content_ideas(
+            channel_category, trending_keywords, subscriber_count
+        )
+        
+        return jsonify(recommendations)
+    except Exception as e:
+        return jsonify({'error': f'콘텐츠 추천 중 오류 발생: {str(e)}'})
+
+@app.route('/api/competitor_analysis', methods=['POST'])
+def competitor_analysis():
+    """경쟁사 분석 API"""
+    try:
+        data = request.get_json()
+        main_channel = data.get('main_channel')
+        competitor_channels = data.get('competitor_channels', [])
+        
+        if not main_channel:
+            return jsonify({'error': '메인 채널 정보가 필요합니다.'})
+        
+        analysis = competitor_analyzer.compare_channels(main_channel, competitor_channels)
+        return jsonify(analysis)
+    except Exception as e:
+        return jsonify({'error': f'경쟁사 분석 중 오류 발생: {str(e)}'})
+
+@app.route('/api/sentiment_analysis', methods=['POST'])
+def sentiment_analysis():
+    """댓글 감정 분석 API"""
+    try:
+        data = request.get_json()
+        comments = data.get('comments', [])
+        
+        analysis = sentiment_analyzer.analyze_comments_sentiment(comments)
+        return jsonify(analysis)
+    except Exception as e:
+        return jsonify({'error': f'감정 분석 중 오류 발생: {str(e)}'})
+
+@app.route('/api/advanced_analytics', methods=['POST'])
+def advanced_analytics():
+    """통합 고급 분석 API"""
+    try:
+        data = request.get_json()
+        channel_data = data.get('channel_data')
+        recent_videos = data.get('recent_videos', [])
+        
+        if not channel_data:
+            return jsonify({'error': '채널 데이터가 필요합니다.'})
+        
+        # 트렌드 분석
+        trends = trend_analyzer.analyze_channel_trends(
+            channel_data.get('channel_name', ''), recent_videos
+        )
+        
+        # 콘텐츠 추천
+        recommendations = content_engine.generate_content_ideas(
+            '일반', trends['trending_keywords'], 
+            channel_data.get('subscriber_count', 0)
+        )
+        
+        # 가상의 댓글 샘플로 감정 분석 (실제로는 YouTube API로 댓글 수집)
+        sample_comments = [
+            "정말 유용한 영상이네요!", "감사합니다", "최고에요", 
+            "별로네요", "도움이 되었습니다", "구독했어요"
+        ]
+        sentiment = sentiment_analyzer.analyze_comments_sentiment(sample_comments)
+        
+        return jsonify({
+            'trends': trends,
+            'content_recommendations': recommendations,
+            'sentiment_analysis': sentiment,
+            'success': True
+        })
+    except Exception as e:
+        return jsonify({'error': f'고급 분석 중 오류 발생: {str(e)}'})
 
 if __name__ == '__main__':
     print("=" * 60)

@@ -1,0 +1,437 @@
+<!-- 고급 분석 기능 추가를 위한 HTML 코드 -->
+
+<!-- 메인 분석 결과 아래에 추가할 고급 기능 버튼들 -->
+<div class="advanced-features-section">
+    <h3 style="text-align: center; margin: 2rem 0; color: #667eea;">
+        🚀 AI 기반 고급 분석 (NEW!)
+    </h3>
+    
+    <div class="advanced-buttons">
+        <button class="advanced-btn" onclick="loadKoreanTrends()" id="trendsBtn">
+            📈 한국어 트렌드 분석
+        </button>
+        <button class="advanced-btn" onclick="getContentRecommendations()" id="contentBtn">
+            🎯 AI 콘텐츠 추천
+        </button>
+        <button class="advanced-btn" onclick="analyzeSentiment()" id="sentimentBtn">
+            😊 댓글 감정 분석
+        </button>
+        <button class="advanced-btn" onclick="getAdvancedAnalytics()" id="advancedBtn">
+            ⚡ 종합 고급 분석
+        </button>
+    </div>
+</div>
+
+<!-- 고급 분석 결과 표시 영역 -->
+<div id="advancedResults" class="advanced-results" style="display: none;">
+    <!-- 동적으로 내용이 추가됩니다 -->
+</div>
+
+<!-- 추가 CSS 스타일 -->
+<style>
+.advanced-features-section {
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    padding: 2rem;
+    border-radius: 20px;
+    margin: 2rem 0;
+    text-align: center;
+}
+
+.advanced-features-section h3 {
+    color: white !important;
+    margin-bottom: 1.5rem;
+    font-size: 1.5rem;
+}
+
+.advanced-buttons {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+.advanced-btn {
+    background: rgba(255, 255, 255, 0.9);
+    color: #333;
+    border: none;
+    padding: 1rem 1.5rem;
+    border-radius: 15px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+
+.advanced-btn:hover {
+    background: white;
+    transform: translateY(-3px);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+}
+
+.advanced-btn:active {
+    transform: translateY(-1px);
+}
+
+.advanced-results {
+    margin-top: 2rem;
+    padding: 2rem;
+    background: #f8f9fa;
+    border-radius: 20px;
+    border: 2px solid #e9ecef;
+}
+
+.trend-card, .recommendation-card, .sentiment-card {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 15px;
+    margin: 1rem 0;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+
+.trend-keywords {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 1rem 0;
+}
+
+.keyword-tag {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 25px;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.content-ideas {
+    list-style: none;
+    padding: 0;
+}
+
+.content-ideas li {
+    background: #f8f9fa;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    border-radius: 10px;
+    border-left: 4px solid #28a745;
+}
+
+.sentiment-chart {
+    display: flex;
+    justify-content: space-around;
+    margin: 1rem 0;
+    text-align: center;
+}
+
+.sentiment-item {
+    flex: 1;
+    padding: 1rem;
+}
+
+.sentiment-percentage {
+    font-size: 2rem;
+    font-weight: bold;
+    margin-bottom: 0.5rem;
+}
+
+.positive { color: #28a745; }
+.negative { color: #dc3545; }
+.neutral { color: #6c757d; }
+
+.loading-spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #667eea;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 20px auto;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+</style>
+
+<!-- JavaScript 함수들 -->
+<script>
+// 전역 변수
+let currentChannelData = null;
+let currentVideosData = null;
+
+// 채널 분석 후 데이터 저장
+function storeAnalysisData(channelData, videosData) {
+    currentChannelData = channelData;
+    currentVideosData = videosData;
+}
+
+// 한국어 트렌드 분석
+async function loadKoreanTrends() {
+    const btn = document.getElementById('trendsBtn');
+    const originalText = btn.textContent;
+    btn.textContent = '분석 중...';
+    btn.disabled = true;
+    
+    try {
+        const response = await fetch('/api/korean_trends');
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        displayTrends(data);
+    } catch (error) {
+        alert('트렌드 분석 중 오류가 발생했습니다: ' + error.message);
+    } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
+    }
+}
+
+// AI 콘텐츠 추천
+async function getContentRecommendations() {
+    if (!currentChannelData) {
+        alert('먼저 채널 분석을 완료해주세요!');
+        return;
+    }
+    
+    const btn = document.getElementById('contentBtn');
+    const originalText = btn.textContent;
+    btn.textContent = '추천 생성 중...';
+    btn.disabled = true;
+    
+    try {
+        const response = await fetch('/api/content_recommendations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                category: '일반',
+                subscriber_count: currentChannelData.subscriber_count || 0
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        displayContentRecommendations(data);
+    } catch (error) {
+        alert('콘텐츠 추천 중 오류가 발생했습니다: ' + error.message);
+    } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
+    }
+}
+
+// 댓글 감정 분석
+async function analyzeSentiment() {
+    const btn = document.getElementById('sentimentBtn');
+    const originalText = btn.textContent;
+    btn.textContent = '감정 분석 중...';
+    btn.disabled = true;
+    
+    try {
+        // 샘플 댓글로 테스트
+        const sampleComments = [
+            "정말 유용한 영상이네요! 감사합니다",
+            "최고예요! 구독했습니다",
+            "도움이 많이 되었어요",
+            "별로네요... 실망",
+            "그냥 그래요",
+            "와 대박! 진짜 좋아요"
+        ];
+        
+        const response = await fetch('/api/sentiment_analysis', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ comments: sampleComments })
+        });
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        displaySentimentAnalysis(data);
+    } catch (error) {
+        alert('감정 분석 중 오류가 발생했습니다: ' + error.message);
+    } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
+    }
+}
+
+// 종합 고급 분석
+async function getAdvancedAnalytics() {
+    if (!currentChannelData) {
+        alert('먼저 채널 분석을 완료해주세요!');
+        return;
+    }
+    
+    const btn = document.getElementById('advancedBtn');
+    const originalText = btn.textContent;
+    btn.textContent = '종합 분석 중...';
+    btn.disabled = true;
+    
+    try {
+        const response = await fetch('/api/advanced_analytics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                channel_data: currentChannelData,
+                recent_videos: currentVideosData || []
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        displayAdvancedAnalytics(data);
+    } catch (error) {
+        alert('고급 분석 중 오류가 발생했습니다: ' + error.message);
+    } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
+    }
+}
+
+// 결과 표시 함수들
+function displayTrends(data) {
+    const resultsDiv = document.getElementById('advancedResults');
+    
+    const html = `
+        <div class="trend-card">
+            <h4>🔥 실시간 한국어 트렌드</h4>
+            <div class="trend-keywords">
+                ${data.trending_keywords.map(keyword => 
+                    `<span class="keyword-tag">${keyword}</span>`
+                ).join('')}
+            </div>
+            
+            <h5>📈 상승 토픽</h5>
+            <div class="trend-keywords">
+                ${data.rising_topics.map(topic => 
+                    `<span class="keyword-tag" style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);">${topic}</span>`
+                ).join('')}
+            </div>
+        </div>
+    `;
+    
+    resultsDiv.innerHTML = html;
+    resultsDiv.style.display = 'block';
+    resultsDiv.scrollIntoView({ behavior: 'smooth' });
+}
+
+function displayContentRecommendations(data) {
+    const resultsDiv = document.getElementById('advancedResults');
+    
+    const html = `
+        <div class="recommendation-card">
+            <h4>🎯 AI 맞춤 콘텐츠 추천</h4>
+            <p><strong>전략:</strong> ${data.strategy}</p>
+            <p><strong>최적 업로드 시간:</strong> ${data.optimal_timing}</p>
+            
+            <h5>💡 추천 콘텐츠 아이디어</h5>
+            <ul class="content-ideas">
+                ${data.content_ideas.map(idea => 
+                    `<li>📝 ${idea}</li>`
+                ).join('')}
+            </ul>
+            
+            <p><strong>추천 해시태그:</strong> ${data.hashtag_suggestions.join(' ')}</p>
+        </div>
+    `;
+    
+    resultsDiv.innerHTML = html;
+    resultsDiv.style.display = 'block';
+    resultsDiv.scrollIntoView({ behavior: 'smooth' });
+}
+
+function displaySentimentAnalysis(data) {
+    const resultsDiv = document.getElementById('advancedResults');
+    
+    const html = `
+        <div class="sentiment-card">
+            <h4>😊 댓글 감정 분석</h4>
+            <p>${data.summary}</p>
+            
+            <div class="sentiment-chart">
+                <div class="sentiment-item">
+                    <div class="sentiment-percentage positive">${data.positive}%</div>
+                    <div>😊 긍정</div>
+                </div>
+                <div class="sentiment-item">
+                    <div class="sentiment-percentage neutral">${data.neutral}%</div>
+                    <div>😐 중립</div>
+                </div>
+                <div class="sentiment-item">
+                    <div class="sentiment-percentage negative">${data.negative}%</div>
+                    <div>😞 부정</div>
+                </div>
+            </div>
+            
+            <p><small>분석된 댓글 수: ${data.total_analyzed}개</small></p>
+        </div>
+    `;
+    
+    resultsDiv.innerHTML = html;
+    resultsDiv.style.display = 'block';
+    resultsDiv.scrollIntoView({ behavior: 'smooth' });
+}
+
+function displayAdvancedAnalytics(data) {
+    const resultsDiv = document.getElementById('advancedResults');
+    
+    const html = `
+        <div style="display: grid; gap: 1rem;">
+            <div class="trend-card">
+                <h4>🔥 트렌드 분석</h4>
+                <div class="trend-keywords">
+                    ${data.trends.trending_keywords.map(keyword => 
+                        `<span class="keyword-tag">${keyword}</span>`
+                    ).join('')}
+                </div>
+            </div>
+            
+            <div class="recommendation-card">
+                <h4>🎯 콘텐츠 전략</h4>
+                <p><strong>${data.content_recommendations.strategy}</strong></p>
+                <ul class="content-ideas">
+                    ${data.content_recommendations.content_ideas.slice(0, 3).map(idea => 
+                        `<li>💡 ${idea}</li>`
+                    ).join('')}
+                </ul>
+            </div>
+            
+            <div class="sentiment-card">
+                <h4>📊 시청자 반응</h4>
+                <p>${data.sentiment_analysis.summary}</p>
+                <div class="sentiment-chart">
+                    <div class="sentiment-item">
+                        <div class="sentiment-percentage positive">${data.sentiment_analysis.positive}%</div>
+                        <div>긍정</div>
+                    </div>
+                    <div class="sentiment-item">
+                        <div class="sentiment-percentage negative">${data.sentiment_analysis.negative}%</div>
+                        <div>부정</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    resultsDiv.innerHTML = html;
+    resultsDiv.style.display = 'block';
+    resultsDiv.scrollIntoView({ behavior: 'smooth' });
+}
+</script>
