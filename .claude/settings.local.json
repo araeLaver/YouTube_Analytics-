@@ -6,7 +6,21 @@
       "Bash(python:*)",
       "Bash(pip install:*)",
       "Bash(git init:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git remote add:*)",
+      "Bash(git push:*)",
+      "Bash(npm run dev:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(chcp 65001)",
+      "Bash(set PYTHONIOENCODING=utf-8)",
+      "Bash(taskkill:*)",
+      "Bash(curl:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(git rm:*)",
+      "Bash(/bashes)",
+      "Bash(git restore:*)"
     ],
     "deny": [],
     "ask": []

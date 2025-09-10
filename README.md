@@ -120,6 +120,10 @@ pip install flask google-api-python-client
 
 ### 4️⃣ **애플리케이션 실행**
 ```bash
+# 메인 서버 실행 (권장)
+python start.py
+
+# 또는 직접 실행
 python working_analyzer.py
 ```
 

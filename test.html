@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Test</title>
+</head>
+<body>
+    <form onsubmit="analyzeChannel(event)">
+        <input type="text" id="channelInput" placeholder="채널 입력" required>
+        <select id="videoCount">
+            <option value="10">10개</option>
+            <option value="20">20개</option>
+        </select>
+        <button type="submit">분석</button>
+    </form>
+    
+    <div id="loading" style="display:none">로딩중...</div>
+    <div id="results"></div>
+    
+    <script>
+        async function analyzeChannel(event) {
+            event.preventDefault();
+            alert('함수가 정상 작동합니다!');
+        }
+        
+        window.analyzeChannel = analyzeChannel;
+    </script>
+</body>
+</html>
