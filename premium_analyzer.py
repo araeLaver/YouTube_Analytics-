@@ -5,7 +5,6 @@ from googleapiclient.errors import HttpError
 import re
 import os
 from datetime import datetime, timedelta
-import pandas as pd
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
 from advanced_features import trend_analyzer, content_engine, competitor_analyzer, sentiment_analyzer
