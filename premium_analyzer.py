@@ -867,6 +867,69 @@ def index():
             transition: all 0.2s ease;
         }
         
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .pagination-info {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .pagination-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1.5rem;
+            padding: 1rem;
+        }
+        
+        .page-btn {
+            padding: 0.5rem 0.75rem;
+            border: 2px solid #007bff;
+            background: #007bff;
+            color: white;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+            font-weight: 500;
+            min-width: 40px;
+            text-align: center;
+        }
+        
+        .page-btn:hover:not(:disabled) {
+            background: #0056b3;
+            border-color: #0056b3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+        }
+        
+        .page-btn.active {
+            background: #28a745;
+            color: white;
+            border-color: #28a745;
+            box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
+        }
+        
+        .page-btn:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+            background: #dc3545;
+            color: white;
+            border-color: #dc3545;
+        }
+        
+        .page-info {
+            margin: 0 1rem;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
         .video-thumbnail {
             width: 120px;
             height: 68px;
@@ -1386,7 +1449,12 @@ def index():
                     </div>
                     
                     <div id="popular-content" class="tab-content active">
-                        <h3><i class="fas fa-fire"></i> 인기 동영상 TOP ${Math.min(parseInt(videoCount) || 10, videos.length)}</h3>
+                        <div class="table-header">
+                            <h3><i class="fas fa-fire"></i> 인기 동영상 (${videos.length}개)</h3>
+                            <div class="pagination-info">
+                                <span id="popular-page-info">페이지 1</span>
+                            </div>
+                        </div>
                         <table class="video-table">
                             <thead>
                                 <tr>
@@ -1398,67 +1466,22 @@ def index():
                                     <th>게시일</th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                ${videos
-                                    .sort((a, b) => b.view_count - a.view_count)
-                                    .slice(0, Math.min(parseInt(videoCount) || 10, videos.length))
-                                    .map(video => `
-                                        <tr>
-                                            <td>
-                                                <img src="https://img.youtube.com/vi/${video.video_id}/mqdefault.jpg" 
-                                                     alt="썸네일" class="video-thumbnail"
-                                                     onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
-                                                     style="cursor: pointer;">
-                                            </td>
-                                            <td>
-                                                <div class="video-title" title="${video.title}"
-                                                     onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
-                                                     style="cursor: pointer;">
-                                                    ${video.title}
-                                                </div>
-                                                <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                                                    <button class="btn-small btn-analyze" onclick="analyzeVideo('${video.video_id}', event);">
-                                                        <i class="fas fa-chart-bar"></i> 분석
-                                                    </button>
-                                                    <button class="btn-small btn-script" onclick="getVideoScript('${video.video_id}', event);">
-                                                        <i class="fas fa-file-text"></i> 스크립트
-                                                    </button>
-                                                    <button class="btn-small btn-details" onclick="event.stopPropagation(); showVideoDetails('${video.video_id}');">
-                                                        <i class="fas fa-info-circle"></i> 상세
-                                                    </button>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="video-stats">
-                                                    <span class="stat-number">${formatNumber(video.view_count)}</span>
-                                                    <span class="stat-label">조회수</span>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="video-stats">
-                                                    <span class="stat-number">${formatNumber(video.like_count)}</span>
-                                                    <span class="stat-label">좋아요</span>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="video-stats">
-                                                    <span class="stat-number">${formatNumber(video.comment_count)}</span>
-                                                    <span class="stat-label">댓글</span>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="video-date">
-                                                    ${new Date(video.published_at).toLocaleDateString('ko-KR')}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    `).join('')}
+                            <tbody id="popular-table-body">
+                                <!-- 페이징 처리된 내용이 여기에 표시됩니다 -->
                             </tbody>
                         </table>
+                        <div class="pagination-controls" id="popular-pagination">
+                            <!-- 페이징 버튼들이 여기에 표시됩니다 -->
+                        </div>
                     </div>
                     
                     <div id="recent-content" class="tab-content">
-                        <h3><i class="fas fa-clock"></i> 최신 동영상 ${Math.min(parseInt(videoCount) || 10, videos.length)}개</h3>
+                        <div class="table-header">
+                            <h3><i class="fas fa-clock"></i> 최신 동영상 (${videos.length}개)</h3>
+                            <div class="pagination-info">
+                                <span id="recent-page-info">페이지 1</span>
+                            </div>
+                        </div>
                         <table class="video-table">
                             <thead>
                                 <tr>
@@ -1470,63 +1493,13 @@ def index():
                                     <th>게시일</th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                ${videos
-                                    .sort((a, b) => new Date(b.published_at) - new Date(a.published_at))
-                                    .slice(0, Math.min(parseInt(videoCount) || 10, videos.length))
-                                    .map(video => `
-                                        <tr>
-                                            <td>
-                                                <img src="https://img.youtube.com/vi/${video.video_id}/mqdefault.jpg" 
-                                                     alt="썸네일" class="video-thumbnail"
-                                                     onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
-                                                     style="cursor: pointer;">
-                                            </td>
-                                            <td>
-                                                <div class="video-title" title="${video.title}"
-                                                     onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
-                                                     style="cursor: pointer;">
-                                                    ${video.title}
-                                                </div>
-                                                <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                                                    <button class="btn-small btn-analyze" onclick="analyzeVideo('${video.video_id}', event);">
-                                                        <i class="fas fa-chart-bar"></i> 분석
-                                                    </button>
-                                                    <button class="btn-small btn-script" onclick="getVideoScript('${video.video_id}', event);">
-                                                        <i class="fas fa-file-text"></i> 스크립트
-                                                    </button>
-                                                    <button class="btn-small btn-details" onclick="event.stopPropagation(); showVideoDetails('${video.video_id}');">
-                                                        <i class="fas fa-info-circle"></i> 상세
-                                                    </button>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="video-stats">
-                                                    <span class="stat-number">${formatNumber(video.view_count)}</span>
-                                                    <span class="stat-label">조회수</span>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="video-stats">
-                                                    <span class="stat-number">${formatNumber(video.like_count)}</span>
-                                                    <span class="stat-label">좋아요</span>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="video-stats">
-                                                    <span class="stat-number">${formatNumber(video.comment_count)}</span>
-                                                    <span class="stat-label">댓글</span>
-                                                </div>
-                                            </td>
-                                            <td>
-                                                <div class="video-date">
-                                                    ${new Date(video.published_at).toLocaleDateString('ko-KR')}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    `).join('')}
+                            <tbody id="recent-table-body">
+                                <!-- 페이징 처리된 내용이 여기에 표시됩니다 -->
                             </tbody>
                         </table>
+                        <div class="pagination-controls" id="recent-pagination">
+                            <!-- 페이징 버튼들이 여기에 표시됩니다 -->
+                        </div>
                     </div>
                 </div>
             `;
@@ -1536,6 +1509,9 @@ def index():
             
             // Store videos data globally for modal
             currentVideos = videos;
+            
+            // Initialize pagination
+            initializePagination();
             
             results.classList.add('active');
         }
@@ -1656,6 +1632,232 @@ def index():
             // Add active class to selected tab and content
             event.target.classList.add('active');
             document.getElementById(tabName + '-content').classList.add('active');
+        }
+        
+        // Pagination variables
+        let popularCurrentPage = 1;
+        let recentCurrentPage = 1;
+        const videosPerPage = 10;
+        
+        // Initialize pagination
+        function initializePagination() {
+            if (currentVideos && currentVideos.length > 0) {
+                setupPopularPagination();
+                setupRecentPagination();
+            }
+        }
+        
+        // Setup popular videos pagination
+        function setupPopularPagination() {
+            const sortedVideos = [...currentVideos].sort((a, b) => b.view_count - a.view_count);
+            const totalPages = Math.ceil(sortedVideos.length / videosPerPage);
+            
+            displayPopularVideos(sortedVideos, 1);
+            createPaginationControls('popular', totalPages, 1);
+        }
+        
+        // Setup recent videos pagination
+        function setupRecentPagination() {
+            const sortedVideos = [...currentVideos].sort((a, b) => new Date(b.published_at) - new Date(a.published_at));
+            const totalPages = Math.ceil(sortedVideos.length / videosPerPage);
+            
+            displayRecentVideos(sortedVideos, 1);
+            createPaginationControls('recent', totalPages, 1);
+        }
+        
+        // Display popular videos for a specific page
+        function displayPopularVideos(videos, page) {
+            const startIndex = (page - 1) * videosPerPage;
+            const endIndex = startIndex + videosPerPage;
+            const pageVideos = videos.slice(startIndex, endIndex);
+            
+            const tbody = document.getElementById('popular-table-body');
+            tbody.innerHTML = pageVideos.map(video => `
+                <tr>
+                    <td>
+                        <img src="https://img.youtube.com/vi/${video.video_id}/mqdefault.jpg" 
+                             alt="썸네일" class="video-thumbnail"
+                             onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
+                             style="cursor: pointer;">
+                    </td>
+                    <td>
+                        <div class="video-title" title="${video.title}"
+                             onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
+                             style="cursor: pointer;">
+                            ${video.title}
+                        </div>
+                        <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <button class="btn-small btn-analyze" onclick="analyzeVideo('${video.video_id}', event);">
+                                <i class="fas fa-chart-bar"></i> 분석
+                            </button>
+                            <button class="btn-small btn-script" onclick="getVideoScript('${video.video_id}', event);">
+                                <i class="fas fa-file-text"></i> 스크립트
+                            </button>
+                            <button class="btn-small btn-details" onclick="event.stopPropagation(); showVideoDetails('${video.video_id}');">
+                                <i class="fas fa-info-circle"></i> 상세
+                            </button>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.view_count)}</span>
+                            <span class="stat-label">조회수</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.like_count)}</span>
+                            <span class="stat-label">좋아요</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.comment_count)}</span>
+                            <span class="stat-label">댓글</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-date">
+                            ${new Date(video.published_at).toLocaleDateString('ko-KR')}
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+            
+            // Update page info
+            document.getElementById('popular-page-info').textContent = 
+                `페이지 ${page} / ${Math.ceil(videos.length / videosPerPage)} (${videos.length}개 영상 중 ${startIndex + 1}-${Math.min(endIndex, videos.length)})`;
+        }
+        
+        // Display recent videos for a specific page
+        function displayRecentVideos(videos, page) {
+            const startIndex = (page - 1) * videosPerPage;
+            const endIndex = startIndex + videosPerPage;
+            const pageVideos = videos.slice(startIndex, endIndex);
+            
+            const tbody = document.getElementById('recent-table-body');
+            tbody.innerHTML = pageVideos.map(video => `
+                <tr>
+                    <td>
+                        <img src="https://img.youtube.com/vi/${video.video_id}/mqdefault.jpg" 
+                             alt="썸네일" class="video-thumbnail"
+                             onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
+                             style="cursor: pointer;">
+                    </td>
+                    <td>
+                        <div class="video-title" title="${video.title}"
+                             onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
+                             style="cursor: pointer;">
+                            ${video.title}
+                        </div>
+                        <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <button class="btn-small btn-analyze" onclick="analyzeVideo('${video.video_id}', event);">
+                                <i class="fas fa-chart-bar"></i> 분석
+                            </button>
+                            <button class="btn-small btn-script" onclick="getVideoScript('${video.video_id}', event);">
+                                <i class="fas fa-file-text"></i> 스크립트
+                            </button>
+                            <button class="btn-small btn-details" onclick="event.stopPropagation(); showVideoDetails('${video.video_id}');">
+                                <i class="fas fa-info-circle"></i> 상세
+                            </button>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.view_count)}</span>
+                            <span class="stat-label">조회수</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.like_count)}</span>
+                            <span class="stat-label">좋아요</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.comment_count)}</span>
+                            <span class="stat-label">댓글</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-date">
+                            ${new Date(video.published_at).toLocaleDateString('ko-KR')}
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+            
+            // Update page info
+            document.getElementById('recent-page-info').textContent = 
+                `페이지 ${page} / ${Math.ceil(videos.length / videosPerPage)} (${videos.length}개 영상 중 ${startIndex + 1}-${Math.min(endIndex, videos.length)})`;
+        }
+        
+        // Create pagination controls
+        function createPaginationControls(type, totalPages, currentPage) {
+            const container = document.getElementById(`${type}-pagination`);
+            
+            if (totalPages <= 1) {
+                container.innerHTML = '';
+                return;
+            }
+            
+            let html = '';
+            
+            // Previous button
+            html += `<button class="page-btn" onclick="changePage('${type}', ${currentPage - 1})" 
+                     ${currentPage <= 1 ? 'disabled' : ''}>‹ 이전</button>`;
+            
+            // Page numbers
+            const maxVisiblePages = 5;
+            let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+            let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+            
+            if (endPage - startPage + 1 < maxVisiblePages) {
+                startPage = Math.max(1, endPage - maxVisiblePages + 1);
+            }
+            
+            if (startPage > 1) {
+                html += `<button class="page-btn" onclick="changePage('${type}', 1)">1</button>`;
+                if (startPage > 2) {
+                    html += `<span class="page-info">...</span>`;
+                }
+            }
+            
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<button class="page-btn ${i === currentPage ? 'active' : ''}" 
+                         onclick="changePage('${type}', ${i})">${i}</button>`;
+            }
+            
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    html += `<span class="page-info">...</span>`;
+                }
+                html += `<button class="page-btn" onclick="changePage('${type}', ${totalPages})">${totalPages}</button>`;
+            }
+            
+            // Next button
+            html += `<button class="page-btn" onclick="changePage('${type}', ${currentPage + 1})" 
+                     ${currentPage >= totalPages ? 'disabled' : ''}>다음 ›</button>`;
+            
+            container.innerHTML = html;
+        }
+        
+        // Change page
+        function changePage(type, page) {
+            if (type === 'popular') {
+                popularCurrentPage = page;
+                const sortedVideos = [...currentVideos].sort((a, b) => b.view_count - a.view_count);
+                const totalPages = Math.ceil(sortedVideos.length / videosPerPage);
+                displayPopularVideos(sortedVideos, page);
+                createPaginationControls('popular', totalPages, page);
+            } else if (type === 'recent') {
+                recentCurrentPage = page;
+                const sortedVideos = [...currentVideos].sort((a, b) => new Date(b.published_at) - new Date(a.published_at));
+                const totalPages = Math.ceil(sortedVideos.length / videosPerPage);
+                displayRecentVideos(sortedVideos, page);
+                createPaginationControls('recent', totalPages, page);
+            }
         }
         
         // Global videos data for modal
