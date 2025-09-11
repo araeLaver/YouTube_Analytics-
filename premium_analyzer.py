@@ -8,10 +8,131 @@ from datetime import datetime, timedelta
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
 from advanced_features import trend_analyzer, content_engine, competitor_analyzer, sentiment_analyzer
+import re
 
 app = Flask(__name__)
 
 API_KEY = os.environ.get('YOUTUBE_API_KEY', 'AIzaSyB-QbLMxVL-RmGK9j21HkIGrg3bjRs871E')
+
+def create_simple_summary(script_text, video_title, snippet, stats):
+    """
+    자막 텍스트와 비디오 정보를 기반으로 간단한 요약 생성
+    """
+    try:
+        # 기본 정보
+        view_count = int(stats.get('viewCount', 0))
+        like_count = int(stats.get('likeCount', 0))
+        comment_count = int(stats.get('commentCount', 0))
+        published_at = snippet.get('publishedAt', '')
+        description = snippet.get('description', '')[:300]
+        
+        # 스크립트 요약
+        sentences = script_text.split('.')[:5]  # 처음 5문장
+        script_preview = '. '.join(sentences)
+        
+        summary_parts = []
+        summary_parts.append("=== 동영상 요약 ===")
+        summary_parts.append("")
+        summary_parts.append(f"제목: {video_title}")
+        summary_parts.append(f"조회수: {view_count:,}회")
+        summary_parts.append(f"좋아요: {like_count:,}개")
+        summary_parts.append(f"댓글: {comment_count:,}개")
+        summary_parts.append("")
+        summary_parts.append("=== 내용 요약 ===")
+        summary_parts.append(f"{script_preview}...")
+        summary_parts.append("")
+        summary_parts.append(f"전체 스크립트 길이: {len(script_text):,}자")
+        summary_parts.append(f"예상 읽기 시간: {len(script_text) // 300 + 1}분")
+        
+        if description:
+            summary_parts.append("")
+            summary_parts.append("=== 설명 ===")
+            summary_parts.append(description)
+        
+        return '\n'.join(summary_parts)
+        
+    except Exception as e:
+        print(f"요약 생성 오류: {e}")
+        return f"내용 미리보기:\n{script_text[:500]}..."
+
+def generate_video_summary(script_text, video_title):
+    """
+    자막 텍스트를 기반으로 동영상 요약 생성
+    """
+    try:
+        # 텍스트 정리
+        cleaned_text = re.sub(r'\s+', ' ', script_text).strip()
+        
+        # 길이에 따른 요약 생성
+        if len(cleaned_text) < 200:
+            return f"📝 **동영상 내용 요약**\n\n{cleaned_text}"
+        
+        # 문장 단위로 분리
+        sentences = re.split(r'[.!?]\s+', cleaned_text)
+        total_sentences = len(sentences)
+        
+        if total_sentences < 5:
+            return f"📝 **동영상 내용 요약**\n\n{cleaned_text[:500]}..."
+        
+        # 핵심 문장 추출 (제목과 관련된 키워드 기반)
+        title_keywords = set(re.findall(r'\b\w+\b', video_title.lower()))
+        scored_sentences = []
+        
+        for i, sentence in enumerate(sentences[:20]):  # 처음 20문장만 분석
+            score = 0
+            sentence_words = set(re.findall(r'\b\w+\b', sentence.lower()))
+            
+            # 제목과의 연관성 점수
+            common_words = title_keywords.intersection(sentence_words)
+            score += len(common_words) * 2
+            
+            # 위치 점수 (앞부분 문장에 가중치)
+            position_score = max(0, 10 - i)
+            score += position_score
+            
+            # 길이 점수 (너무 짧거나 긴 문장 제외)
+            if 10 < len(sentence) < 200:
+                score += 3
+            
+            scored_sentences.append((score, sentence, i))
+        
+        # 점수순으로 정렬하여 상위 문장들 선택
+        scored_sentences.sort(key=lambda x: x[0], reverse=True)
+        
+        # 요약 생성
+        summary_parts = []
+        summary_parts.append("📝 **동영상 내용 요약**")
+        summary_parts.append("")
+        
+        # 핵심 내용 (상위 3개 문장)
+        summary_parts.append("🎯 **핵심 내용**")
+        for i, (score, sentence, pos) in enumerate(scored_sentences[:3]):
+            if sentence.strip():
+                summary_parts.append(f"• {sentence.strip()}")
+        
+        summary_parts.append("")
+        
+        # 전체 스크립트 길이 정보
+        word_count = len(cleaned_text.split())
+        summary_parts.append(f"📊 **분석 정보**")
+        summary_parts.append(f"• 전체 스크립트 길이: {len(cleaned_text):,}자")
+        summary_parts.append(f"• 예상 단어 수: {word_count:,}개")
+        summary_parts.append(f"• 예상 읽기 시간: {max(1, word_count // 200)}분")
+        
+        # 시작 부분과 마지막 부분 미리보기
+        if len(cleaned_text) > 1000:
+            summary_parts.append("")
+            summary_parts.append("📖 **스크립트 미리보기**")
+            summary_parts.append(f"**시작:** {cleaned_text[:200]}...")
+            summary_parts.append(f"**마지막:** ...{cleaned_text[-200:]}")
+        
+        return '\n'.join(summary_parts)
+        
+    except Exception as e:
+        print(f"요약 생성 오류: {e}")
+        # 오류 시 기본 요약 반환
+        preview = script_text[:500] if script_text else "내용을 분석할 수 없습니다."
+        return f"📝 **동영상 내용 요약**\n\n{preview}..."
 
 class PremiumYouTubeAnalyzer:
     def __init__(self, api_key):
@@ -1065,13 +1186,25 @@ def index():
         }
         
         .btn-script {
-            background: var(--accent);
+            background: linear-gradient(135deg, #FF6B6B, #FF8E8E);
             color: white;
+            border: none;
+            padding: 0.6rem 1.2rem;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);
+            transition: all 0.3s ease;
         }
         
         .btn-script:hover {
-            background: #0891b2;
-            transform: translateY(-1px);
+            background: linear-gradient(135deg, #FF5252, #FF7979);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 107, 107, 0.4);
+        }
+        
+        .btn-script i {
+            margin-right: 0.5rem;
         }
         
         .btn-details {
@@ -1115,16 +1248,17 @@ def index():
         }
         
         .script-modal-content {
-            background-color: var(--surface);
-            margin: 2% auto;
+            background-color: #ffffff;
+            margin: 5% auto;
             padding: 2rem;
             border-radius: 20px;
-            width: 95%;
-            max-width: 1000px;
-            max-height: 90vh;
+            width: 90%;
+            max-width: 900px;
+            max-height: 80vh;
             overflow-y: auto;
-            border: 1px solid var(--border);
-            box-shadow: var(--shadow-xl);
+            border: 2px solid #ddd;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            position: relative;
         }
         
         .script-text {
@@ -1691,7 +1825,7 @@ def index():
                                 <i class="fas fa-chart-bar"></i> 분석
                             </button>
                             <button class="btn-small btn-script" onclick="getVideoScript('${video.video_id}', event);">
-                                <i class="fas fa-file-text"></i> 스크립트
+                                <i class="fas fa-file-text"></i> 자막/스크립트
                             </button>
                             <button class="btn-small btn-details" onclick="event.stopPropagation(); showVideoDetails('${video.video_id}');">
                                 <i class="fas fa-info-circle"></i> 상세
@@ -1755,7 +1889,7 @@ def index():
                                 <i class="fas fa-chart-bar"></i> 분석
                             </button>
                             <button class="btn-small btn-script" onclick="getVideoScript('${video.video_id}', event);">
-                                <i class="fas fa-file-text"></i> 스크립트
+                                <i class="fas fa-file-text"></i> 자막/스크립트
                             </button>
                             <button class="btn-small btn-details" onclick="event.stopPropagation(); showVideoDetails('${video.video_id}');">
                                 <i class="fas fa-info-circle"></i> 상세
@@ -1999,17 +2133,18 @@ def index():
         
         // Get video script/transcript
         async function getVideoScript(videoId, event) {
-            console.log('getVideoScript called with videoId:', videoId);
+            console.log('getVideoScript 호출됨, videoId:', videoId);
             event.stopPropagation();
+            
             const button = event.target.closest('.btn-script');
             const originalContent = button.innerHTML;
             
-            // Show loading state
+            // 로딩 상태 표시
             button.classList.add('btn-loading');
-            button.innerHTML = '<i class="fas fa-file-text"></i> 로딩...';
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 로딩중...';
             
             try {
-                console.log('Making request to /get_video_script');
+                console.log('API 요청 시작');
                 const response = await fetch('/get_video_script', {
                     method: 'POST',
                     headers: {
@@ -2020,23 +2155,29 @@ def index():
                     })
                 });
                 
-                console.log('Response received:', response.status);
+                console.log('응답 받음:', response.status);
                 const data = await response.json();
-                console.log('Response data:', data);
+                console.log('응답 데이터:', data);
                 
                 if (data.error) {
                     throw new Error(data.error);
                 }
                 
-                // Show script in modal
-                console.log('Calling showVideoScript with data');
+                // 모달에 스크립트 표시
                 showVideoScript(data);
                 
             } catch (error) {
-                console.error('Error in getVideoScript:', error);
-                alert('스크립트 가져오기 중 오류가 발생했습니다: ' + error.message);
+                console.error('에러 발생:', error);
+                showVideoScript({
+                    video_id: videoId,
+                    title: '오류 발생',
+                    script: null,
+                    summary: '오류가 발생했습니다: ' + error.message,
+                    language: null
+                });
+                
             } finally {
-                // Reset button state
+                // 버튼 상태 복구
                 button.classList.remove('btn-loading');
                 button.innerHTML = originalContent;
             }
@@ -2094,47 +2235,71 @@ def index():
         
         // Show video script modal
         function showVideoScript(data) {
-            console.log('showVideoScript called with data:', data);
+            console.log('showVideoScript 호출됨:', data);
+            
+            const scriptModal = document.getElementById('scriptModal');
             const modalContent = document.getElementById('scriptModalContent');
-            console.log('scriptModalContent element:', modalContent);
-            modalContent.innerHTML = `
-                <h2>${data.title}</h2>
-                <div style="margin: 1rem 0;">
-                    <p style="color: var(--text-secondary);">
-                        ${data.script ? '자동 생성된 자막을 기반으로 한 스크립트입니다.' : '이 동영상에는 자막이 없습니다.'}
-                    </p>
-                </div>
-                
-                ${data.script ? `
-                    <div class="script-text">
-                        ${data.script.replace(/\\n/g, '<br>')}
+            
+            if (!scriptModal || !modalContent) {
+                console.error('모달 요소를 찾을 수 없음');
+                alert('모달을 찾을 수 없습니다.');
+                return;
+            }
+            
+            console.log('모달 내용 업데이트 중...');
+            
+            // 간단한 내용으로 모달 구성
+            let content = `
+                <h2 style="color: #333; margin-bottom: 1rem;">${data.title || '동영상 정보'}</h2>
+                <hr style="margin: 1rem 0;">
+            `;
+            
+            if (data.script) {
+                content += `
+                    <div style="background: #f0f8ff; padding: 1.5rem; border-radius: 8px; margin: 1rem 0;">
+                        <h3 style="color: #2196F3; margin-bottom: 1rem;">✅ 자막을 찾았습니다!</h3>
+                        <p>언어: ${data.language || '자동 감지'}</p>
                     </div>
-                    
-                    <div style="margin-top: 2rem;">
-                        <h3 style="color: var(--primary); margin-bottom: 1rem;">📝 AI 요약</h3>
-                        <div style="background: var(--surface-light); padding: 1.5rem; border-radius: 12px; border-left: 4px solid var(--accent);">
-                            ${data.summary || '요약을 생성하는 중입니다...'}
+                `;
+            } else {
+                content += `
+                    <div style="background: #fff3cd; padding: 1.5rem; border-radius: 8px; margin: 1rem 0;">
+                        <h3 style="color: #856404;">❌ 자막이 없습니다</h3>
+                        <p>대신 동영상 메타데이터를 분석했습니다.</p>
+                    </div>
+                `;
+            }
+            
+            if (data.summary) {
+                content += `
+                    <div style="background: #ffffff; border: 1px solid #ddd; padding: 1.5rem; border-radius: 8px; margin: 1rem 0;">
+                        <h3 style="color: #333; margin-bottom: 1rem;">📋 분석 결과</h3>
+                        <div style="white-space: pre-wrap; line-height: 1.6; color: #555;">
+                            ${data.summary}
                         </div>
                     </div>
-                ` : `
-                    <div style="text-align: center; padding: 3rem; color: var(--text-secondary);">
-                        <i class="fas fa-exclamation-circle" style="font-size: 3rem; margin-bottom: 1rem;"></i>
-                        <p>이 동영상에는 사용 가능한 자막이 없습니다.</p>
-                    </div>
-                `}
-                
-                <div style="margin-top: 2rem; text-align: center;">
+                `;
+            }
+            
+            content += `
+                <div style="text-align: center; margin-top: 2rem;">
                     <a href="https://youtube.com/watch?v=${data.video_id}" 
                        target="_blank" 
-                       class="btn btn-primary" 
-                       style="text-decoration: none; display: inline-flex;">
-                        <i class="fab fa-youtube"></i>
-                        YouTube에서 보기
+                       style="background: #ff0000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                        🎥 YouTube에서 보기
                     </a>
+                    <button onclick="closeScriptModal()" 
+                           style="background: #6c757d; color: white; padding: 12px 24px; border: none; border-radius: 6px; margin-left: 10px; cursor: pointer;">
+                        닫기
+                    </button>
                 </div>
             `;
             
-            document.getElementById('scriptModal').style.display = 'block';
+            modalContent.innerHTML = content;
+            
+            console.log('모달 내용 업데이트 완료, 모달 표시');
+            scriptModal.style.display = 'block';
+            console.log('모달 표시 완료');
         }
         
         // Close script modal
@@ -2209,101 +2374,119 @@ def analyze_video():
 @app.route('/get_video_script', methods=['POST'])
 def get_video_script():
     try:
+        print("get_video_script 요청 받음")
         data = request.get_json()
         video_id = data.get('video_id', '')
+        print(f"비디오 ID: {video_id}")
         
         if not video_id:
+            print("비디오 ID 없음")
             return jsonify({'error': '동영상 ID가 필요합니다.'})
         
-        # 동영상 정보 가져오기
+        # 동영상 정보 가져오기 (더 많은 정보 포함)
+        print("YouTube API로 비디오 정보 요청 중...")
         video_response = analyzer.youtube.videos().list(
-            part='snippet',
+            part='snippet,statistics,contentDetails',
             id=video_id
         ).execute()
         
         if not video_response['items']:
+            print("비디오를 찾을 수 없음")
             return jsonify({'error': '동영상을 찾을 수 없습니다.'})
         
         video = video_response['items'][0]
         title = video['snippet']['title']
+        print(f"비디오 제목: {title}")
         
-        # 실제 자막 가져오기
+        # 간단한 자막 검색 및 요약 생성
         script = None
         summary = None
+        used_language = None
         
         try:
-            # 먼저 한국어 자막 시도, 없으면 영어, 그 다음 자동 생성 자막
-            # 다양한 언어 코드로 자막 시도
-            language_codes = ['ko', 'en', 'en-US', 'en-GB']
+            print("자막 검색 시작...")
             
+            # 자막 검색 시도
             transcript_data = None
-            for lang in language_codes:
+            try:
+                # 한국어 우선
+                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko'])
+                used_language = "한국어"
+            except:
                 try:
-                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
-                    break
+                    # 영어
+                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                    used_language = "영어"
                 except:
-                    continue
-            
-            # 언어 지정 없이 시도
-            if not transcript_data:
-                try:
-                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
-                except:
-                    transcript_data = None
+                    try:
+                        # 아무 언어
+                        transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+                        used_language = "자동 감지"
+                    except:
+                        transcript_data = None
             
             if transcript_data:
-                # 자막 데이터를 텍스트로 변환
-                formatter = TextFormatter()
-                script = formatter.format_transcript(transcript_data)
+                print(f"자막 발견! 언어: {used_language}")
+                # 자막을 텍스트로 변환
+                script_text = ' '.join([item['text'] for item in transcript_data])
+                script = script_text
                 
-                # 간단한 요약 생성 (첫 500자 + 마지막 200자)
-                if len(script) > 700:
-                    summary = f"📝 스크립트 요약:\n\n시작 부분: {script[:300]}...\n\n마지막 부분: ...{script[-200:]}"
+                # 간단한 요약 생성
+                if len(script_text) > 200:
+                    summary = create_simple_summary(script_text, title, video['snippet'], video['statistics'])
                 else:
-                    summary = f"📝 전체 스크립트:\n\n{script}"
-                    
+                    summary = f"전체 내용:\n{script_text}"
+                print(f"요약 생성 완료 (스크립트 길이: {len(script_text)}자)")
+            else:
+                print("자막을 찾을 수 없음")
+                
         except Exception as e:
-            print(f"자막 가져오기 실패: {e}")
+            print(f"자막 처리 중 오류: {e}")
             script = None
             summary = None
         
-        # 자막이 없을 때 항상 유용한 요약 제공
+        # 자막이 없을 때도 유용한 정보 제공
         if not script:
-            # 동영상 메타데이터 수집
-            description = video.get('snippet', {}).get('description', '')
-            duration = video.get('contentDetails', {}).get('duration', 'N/A')
-            published = video.get('snippet', {}).get('publishedAt', 'N/A')
-            tags = video.get('snippet', {}).get('tags', [])
+            print("자막이 없으므로 메타데이터 기반 요약 생성")
+            snippet = video.get('snippet', {})
+            stats = video.get('statistics', {})
+            content_details = video.get('contentDetails', {})
             
-            # 날짜 포맷팅
-            if published != 'N/A':
-                from datetime import datetime
-                published_date = datetime.fromisoformat(published.replace('Z', '+00:00'))
-                published = published_date.strftime('%Y년 %m월 %d일')
+            # 통계 정보
+            view_count = int(stats.get('viewCount', 0))
+            like_count = int(stats.get('likeCount', 0))
+            comment_count = int(stats.get('commentCount', 0))
             
-            # 종합적인 요약 생성
+            # 메타데이터
+            description = snippet.get('description', '')[:400]
+            published = snippet.get('publishedAt', '')
+            tags = snippet.get('tags', [])
+            duration = content_details.get('duration', 'N/A')
+            
             summary_parts = []
-            summary_parts.append("📋 **동영상 정보**")
-            summary_parts.append(f"• 업로드: {published}")
-            summary_parts.append(f"• 길이: {duration}")
+            summary_parts.append("=== 동영상 정보 ===")
+            summary_parts.append("")
+            summary_parts.append(f"제목: {title}")
+            summary_parts.append(f"조회수: {view_count:,}회")
+            summary_parts.append(f"좋아요: {like_count:,}개") 
+            summary_parts.append(f"댓글: {comment_count:,}개")
+            summary_parts.append(f"영상 길이: {duration}")
             
             if tags:
-                tag_str = ', '.join(tags[:5])
-                summary_parts.append(f"• 태그: {tag_str}")
+                summary_parts.append(f"태그: {', '.join(tags[:5])}")
             
             if description:
-                summary_parts.append("\n📝 **내용 설명**")
-                desc_preview = description.strip()[:400]
-                if len(description) > 400:
-                    desc_preview += "..."
-                summary_parts.append(desc_preview)
-            else:
-                summary_parts.append("\n💡 **분석 결과**")
-                summary_parts.append("이 동영상은 제목을 통해 내용을 파악할 수 있으며, 상세 분석을 통해 더 많은 정보를 얻을 수 있습니다.")
-                
-            summary_parts.append("\n🎯 **활용 방법**")
-            summary_parts.append("• 분석 버튼: 조회수, 좋아요, 댓글 등 상세 통계 확인")
-            summary_parts.append("• 상세 버튼: 동영상 메타데이터 및 성과 지표 분석")
+                summary_parts.append("")
+                summary_parts.append("=== 동영상 설명 ===")
+                summary_parts.append(description)
+                if len(snippet.get('description', '')) > 400:
+                    summary_parts.append("...")
+            
+            summary_parts.append("")
+            summary_parts.append("=== 분석 결과 ===")
+            summary_parts.append("• 이 동영상에는 자막이 없습니다")
+            summary_parts.append("• 위 정보는 YouTube API에서 가져온 메타데이터입니다")
+            summary_parts.append("• 실제 내용은 YouTube에서 직접 시청하세요")
             
             summary = '\n'.join(summary_parts)
         
@@ -2311,12 +2494,15 @@ def get_video_script():
             'video_id': video_id,
             'title': title,
             'script': script,
-            'summary': summary
+            'summary': summary,
+            'language': used_language if script else None
         }
         
+        print(f"응답 준비 완료: script={bool(script)}, summary={bool(summary)}")
         return jsonify(result)
         
     except Exception as e:
+        print(f"스크립트 가져오기 중 오류: {str(e)}")
         return jsonify({'error': f'스크립트 가져오기 중 오류 발생: {str(e)}'})
 
 @app.route('/api/korean_trends', methods=['GET'])
