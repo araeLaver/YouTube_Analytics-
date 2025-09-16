@@ -1,1 +1,1 @@
-web: python premium_analyzer.py
+web: python app.py

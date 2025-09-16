@@ -1,552 +1,3246 @@
 # -*- coding: utf-8 -*-
-"""
-YouTube Analytics Pro - 회원가입/결제 시스템이 포함된 버전
-"""
+import sys
+import os
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
+# 인코딩 설정
+if sys.platform.startswith('win'):
+    # Windows에서 UTF-8 설정
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+
+from flask import Flask, render_template, request, jsonify
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from datetime import datetime, timedelta
+import re
 import os
+from datetime import datetime, timedelta
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.formatters import TextFormatter
+from advanced_features import trend_analyzer, content_engine, competitor_analyzer, sentiment_analyzer
 import re
 
-# Flask 앱 초기화
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-here-change-this'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///youtube_analytics.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# 확장 프로그램 초기화
-db = SQLAlchemy(app)
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login'
+API_KEY = os.environ.get('YOUTUBE_API_KEY', 'AIzaSyB-QbLMxVL-RmGK9j21HkIGrg3bjRs871E')
 
-# YouTube API 설정
-API_KEY = "AIzaSyB-QbLMxVL-RmGK9j21HkIGrg3bjRs871E"
-youtube = build('youtube', 'v3', developerKey=API_KEY)
-
-# 사용자 모델
-class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(100), unique=True, nullable=False)
-    password_hash = db.Column(db.String(100), nullable=False)
-    name = db.Column(db.String(100), nullable=False)
-    plan = db.Column(db.String(20), default='free')  # free, pro, agency
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_payment = db.Column(db.DateTime)
-    
-    # 관계
-    usage_logs = db.relationship('UsageLog', backref='user', lazy=True)
-
-class UsageLog(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    action = db.Column(db.String(50), nullable=False)  # 'analyze_channel', 'get_script'
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    channel_id = db.Column(db.String(100))
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
-
-# 사용량 체크 함수
-def check_usage_limit(user, action):
-    if user.plan != 'free':
-        return True  # 유료 사용자는 무제한
-    
-    # 무료 사용자는 월 5회 제한
-    current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    usage_count = UsageLog.query.filter(
-        UsageLog.user_id == user.id,
-        UsageLog.action == action,
-        UsageLog.created_at >= current_month
-    ).count()
-    
-    return usage_count < 5
-
-def log_usage(user, action, channel_id=None):
-    log = UsageLog(user_id=user.id, action=action, channel_id=channel_id)
-    db.session.add(log)
-    db.session.commit()
-
-# 루트 페이지
-@app.route('/')
-def index():
-    return '''<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Analytics Pro</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .header { text-align: center; color: white; padding: 50px 0; }
-        .header h1 { font-size: 3rem; margin-bottom: 20px; }
-        .header p { font-size: 1.2rem; opacity: 0.9; }
-        .auth-section { background: white; border-radius: 20px; padding: 40px; margin: 30px auto; max-width: 500px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
-        .auth-tabs { display: flex; margin-bottom: 30px; }
-        .auth-tab { flex: 1; padding: 15px; text-align: center; background: #f8f9fa; border: none; cursor: pointer; transition: all 0.3s; }
-        .auth-tab.active { background: #007bff; color: white; }
-        .form-group { margin-bottom: 20px; }
-        .form-group label { display: block; margin-bottom: 8px; font-weight: 500; }
-        .form-group input { width: 100%; padding: 12px; border: 2px solid #e1e5e9; border-radius: 8px; font-size: 16px; }
-        .form-group input:focus { outline: none; border-color: #007bff; }
-        .btn { width: 100%; padding: 15px; background: #007bff; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; transition: all 0.3s; }
-        .btn:hover { background: #0056b3; transform: translateY(-2px); }
-        .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 30px; margin: 50px 0; }
-        .feature-card { background: white; padding: 30px; border-radius: 15px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
-        .feature-icon { font-size: 3rem; color: #007bff; margin-bottom: 20px; }
-        .pricing { background: white; border-radius: 20px; padding: 40px; margin: 50px 0; }
-        .pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 30px; margin-top: 30px; }
-        .pricing-card { border: 2px solid #e1e5e9; border-radius: 15px; padding: 30px; text-align: center; transition: all 0.3s; }
-        .pricing-card:hover { border-color: #007bff; transform: translateY(-5px); }
-        .price { font-size: 2.5rem; color: #007bff; font-weight: bold; margin: 20px 0; }
-        .hidden { display: none; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🚀 YouTube Analytics Pro</h1>
-            <p>AI 기반 YouTube 채널 분석으로 크리에이터의 성공을 지원합니다</p>
-        </div>
+def create_simple_summary(script_text, video_title, snippet, stats):
+    """
+    자막 텍스트와 비디오 정보를 기반으로 간단한 요약 생성
+    """
+    try:
+        # 문자열 인코딩 안전화
+        def safe_encode(text):
+            if isinstance(text, str):
+                # 특수 이모지나 문자를 안전한 문자로 변환
+                safe_text = text.encode('utf-8', errors='ignore').decode('utf-8')
+                # 문제가 될 수 있는 특수 문자들을 제거하거나 대체
+                safe_text = re.sub(r'[^\w\s가-힣.,!?()-]', '', safe_text)
+                return safe_text
+            return str(text)
         
-        <div class="auth-section">
-            <div class="auth-tabs">
-                <button class="auth-tab active" onclick="showTab('login')">로그인</button>
-                <button class="auth-tab" onclick="showTab('register')">회원가입</button>
-            </div>
-            
-            <div id="login-form">
-                <form action="/login" method="POST">
-                    <div class="form-group">
-                        <label>이메일</label>
-                        <input type="email" name="email" required>
-                    </div>
-                    <div class="form-group">
-                        <label>비밀번호</label>
-                        <input type="password" name="password" required>
-                    </div>
-                    <button type="submit" class="btn">로그인</button>
-                </form>
-            </div>
-            
-            <div id="register-form" class="hidden">
-                <form action="/register" method="POST">
-                    <div class="form-group">
-                        <label>이름</label>
-                        <input type="text" name="name" required>
-                    </div>
-                    <div class="form-group">
-                        <label>이메일</label>
-                        <input type="email" name="email" required>
-                    </div>
-                    <div class="form-group">
-                        <label>비밀번호</label>
-                        <input type="password" name="password" required>
-                    </div>
-                    <button type="submit" class="btn">회원가입</button>
-                </form>
-            </div>
-        </div>
+        # 기본 정보 (안전하게 인코딩)
+        view_count = int(stats.get('viewCount', 0))
+        like_count = int(stats.get('likeCount', 0))
+        comment_count = int(stats.get('commentCount', 0))
         
-        <div class="features">
-            <div class="feature-card">
-                <div class="feature-icon">📊</div>
-                <h3>심화 채널 분석</h3>
-                <p>구독자, 조회수, 참여도 등 상세한 성과 지표를 한눈에 확인하세요</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">💰</div>
-                <h3>수익 예측</h3>
-                <p>AI 알고리즘 기반으로 정확한 월간/연간 수익을 예측합니다</p>
-            </div>
-            <div class="feature-card">
-                <div class="feature-icon">🎯</div>
-                <h3>트렌드 분석</h3>
-                <p>최신 트렌드를 파악하고 성공하는 콘텐츠 전략을 수립하세요</p>
-            </div>
-        </div>
+        # 텍스트들을 안전하게 처리
+        safe_title = safe_encode(video_title)
+        safe_script = safe_encode(script_text)
         
-        <div class="pricing">
-            <h2 style="text-align: center; margin-bottom: 20px;">💎 요금제</h2>
-            <div class="pricing-grid">
-                <div class="pricing-card">
-                    <h3>Free</h3>
-                    <div class="price">₩0</div>
-                    <ul style="text-align: left; margin: 20px 0;">
-                        <li>월 5회 채널 분석</li>
-                        <li>기본 통계 제공</li>
-                        <li>수익 추정</li>
-                    </ul>
-                </div>
-                <div class="pricing-card">
-                    <h3>Pro</h3>
-                    <div class="price">₩19,900</div>
-                    <ul style="text-align: left; margin: 20px 0;">
-                        <li>무제한 채널 분석</li>
-                        <li>AI 트렌드 예측</li>
-                        <li>상세 리포트</li>
-                        <li>이메일 지원</li>
-                    </ul>
-                </div>
-                <div class="pricing-card">
-                    <h3>Agency</h3>
-                    <div class="price">₩99,900</div>
-                    <ul style="text-align: left; margin: 20px 0;">
-                        <li>Pro 기능 모두 포함</li>
-                        <li>다중 채널 관리</li>
-                        <li>API 접근</li>
-                        <li>전담 지원</li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-    </div>
+        # 스크립트 요약
+        sentences = safe_script.split('.')[:3]  # 처음 3문장으로 줄임
+        script_preview = '. '.join([s.strip() for s in sentences if s.strip()])
+        
+        summary_parts = []
+        summary_parts.append("동영상 정보")
+        summary_parts.append("=" * 30)
+        summary_parts.append(f"제목: {safe_title}")
+        summary_parts.append(f"조회수: {view_count:,}회")
+        summary_parts.append(f"좋아요: {like_count:,}개")
+        summary_parts.append(f"댓글: {comment_count:,}개")
+        summary_parts.append("")
+        summary_parts.append("내용 미리보기")
+        summary_parts.append("-" * 20)
+        summary_parts.append(f"{script_preview}...")
+        summary_parts.append("")
+        summary_parts.append(f"전체 길이: {len(safe_script):,}자")
+        summary_parts.append(f"예상 읽기 시간: {len(safe_script) // 300 + 1}분")
+        
+        return '\n'.join(summary_parts)
+        
+    except Exception as e:
+        print(f"요약 생성 오류: {e}")
+        # 최소한의 안전한 요약 반환
+        try:
+            safe_script = script_text.encode('ascii', errors='ignore').decode('ascii')
+            return f"스크립트 미리보기:\n{safe_script[:300]}..."
+        except:
+            return "스크립트 분석 중 오류가 발생했습니다."
+
+def generate_video_summary(script_text, video_title):
+    """
+    자막 텍스트를 기반으로 동영상 요약 생성
+    """
+    try:
+        # 텍스트 정리
+        cleaned_text = re.sub(r'\s+', ' ', script_text).strip()
+        
+        # 길이에 따른 요약 생성
+        if len(cleaned_text) < 200:
+            return f"📝 **동영상 내용 요약**\n\n{cleaned_text}"
+        
+        # 문장 단위로 분리
+        sentences = re.split(r'[.!?]\s+', cleaned_text)
+        total_sentences = len(sentences)
+        
+        if total_sentences < 5:
+            return f"📝 **동영상 내용 요약**\n\n{cleaned_text[:500]}..."
+        
+        # 핵심 문장 추출 (제목과 관련된 키워드 기반)
+        title_keywords = set(re.findall(r'\b\w+\b', video_title.lower()))
+        scored_sentences = []
+        
+        for i, sentence in enumerate(sentences[:20]):  # 처음 20문장만 분석
+            score = 0
+            sentence_words = set(re.findall(r'\b\w+\b', sentence.lower()))
+            
+            # 제목과의 연관성 점수
+            common_words = title_keywords.intersection(sentence_words)
+            score += len(common_words) * 2
+            
+            # 위치 점수 (앞부분 문장에 가중치)
+            position_score = max(0, 10 - i)
+            score += position_score
+            
+            # 길이 점수 (너무 짧거나 긴 문장 제외)
+            if 10 < len(sentence) < 200:
+                score += 3
+            
+            scored_sentences.append((score, sentence, i))
+        
+        # 점수순으로 정렬하여 상위 문장들 선택
+        scored_sentences.sort(key=lambda x: x[0], reverse=True)
+        
+        # 요약 생성
+        summary_parts = []
+        summary_parts.append("📝 **동영상 내용 요약**")
+        summary_parts.append("")
+        
+        # 핵심 내용 (상위 3개 문장)
+        summary_parts.append("🎯 **핵심 내용**")
+        for i, (score, sentence, pos) in enumerate(scored_sentences[:3]):
+            if sentence.strip():
+                summary_parts.append(f"• {sentence.strip()}")
+        
+        summary_parts.append("")
+        
+        # 전체 스크립트 길이 정보
+        word_count = len(cleaned_text.split())
+        summary_parts.append(f"📊 **분석 정보**")
+        summary_parts.append(f"• 전체 스크립트 길이: {len(cleaned_text):,}자")
+        summary_parts.append(f"• 예상 단어 수: {word_count:,}개")
+        summary_parts.append(f"• 예상 읽기 시간: {max(1, word_count // 200)}분")
+        
+        # 시작 부분과 마지막 부분 미리보기
+        if len(cleaned_text) > 1000:
+            summary_parts.append("")
+            summary_parts.append("📖 **스크립트 미리보기**")
+            summary_parts.append(f"**시작:** {cleaned_text[:200]}...")
+            summary_parts.append(f"**마지막:** ...{cleaned_text[-200:]}")
+        
+        return '\n'.join(summary_parts)
+        
+    except Exception as e:
+        print(f"요약 생성 오류: {e}")
+        # 오류 시 기본 요약 반환
+        preview = script_text[:500] if script_text else "내용을 분석할 수 없습니다."
+        return f"📝 **동영상 내용 요약**\n\n{preview}..."
+
+class PremiumYouTubeAnalyzer:
+    def __init__(self, api_key):
+        self.youtube = build('youtube', 'v3', developerKey=api_key)
     
-    <script>
-        function showTab(tab) {
-            // 탭 버튼 상태 변경
-            document.querySelectorAll('.auth-tab').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
+    def search_channel(self, query):
+        """채널 검색"""
+        try:
+            search_response = self.youtube.search().list(
+                q=query,
+                part='snippet',
+                type='channel',
+                maxResults=1
+            ).execute()
             
-            // 폼 표시/숨김
-            if (tab === 'login') {
-                document.getElementById('login-form').classList.remove('hidden');
-                document.getElementById('register-form').classList.add('hidden');
-            } else {
-                document.getElementById('login-form').classList.add('hidden');
-                document.getElementById('register-form').classList.remove('hidden');
+            if search_response['items']:
+                return search_response['items'][0]['snippet']['channelId']
+            return None
+        except Exception as e:
+            print(f"검색 오류: {e}")
+            return None
+    
+    def get_channel_info(self, channel_id):
+        """채널 기본 정보"""
+        try:
+            response = self.youtube.channels().list(
+                part='snippet,statistics,contentDetails',
+                id=channel_id
+            ).execute()
+            
+            if response['items']:
+                return response['items'][0]
+            return None
+        except Exception as e:
+            print(f"채널 정보 오류: {e}")
+            return None
+    
+    def get_videos(self, channel_id, max_results=50):
+        """채널의 동영상들 가져오기"""
+        try:
+            # 채널의 업로드 플레이리스트 ID 가져오기
+            channel_response = self.youtube.channels().list(
+                part='contentDetails',
+                id=channel_id
+            ).execute()
+            
+            playlist_id = channel_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+            
+            videos = []
+            next_page_token = None
+            
+            while len(videos) < max_results:
+                # 플레이리스트의 동영상들 가져오기
+                playlist_response = self.youtube.playlistItems().list(
+                    part='snippet',
+                    playlistId=playlist_id,
+                    maxResults=min(50, max_results - len(videos)),
+                    pageToken=next_page_token
+                ).execute()
+                
+                video_ids = [item['snippet']['resourceId']['videoId'] 
+                           for item in playlist_response['items']]
+                
+                # 동영상 상세 정보 가져오기
+                videos_response = self.youtube.videos().list(
+                    part='snippet,statistics,contentDetails',
+                    id=','.join(video_ids)
+                ).execute()
+                
+                for video in videos_response['items']:
+                    videos.append({
+                        'video_id': video['id'],
+                        'title': video['snippet']['title'],
+                        'published_at': video['snippet']['publishedAt'],
+                        'view_count': int(video['statistics'].get('viewCount', 0)),
+                        'like_count': int(video['statistics'].get('likeCount', 0)),
+                        'comment_count': int(video['statistics'].get('commentCount', 0)),
+                        'duration': video['contentDetails']['duration']
+                    })
+                
+                next_page_token = playlist_response.get('nextPageToken')
+                if not next_page_token:
+                    break
+            
+            return videos
+        except Exception as e:
+            print(f"동영상 가져오기 오류: {e}")
+            return []
+    
+    def analyze_channel(self, channel_id):
+        """채널 종합 분석"""
+        return self.analyze_channel_with_count(channel_id, 100)
+    
+    def analyze_channel_with_count(self, channel_id, max_videos):
+        """채널 종합 분석 (동영상 수 지정)"""
+        channel_info = self.get_channel_info(channel_id)
+        if not channel_info:
+            return None
+        
+        videos = self.get_videos(channel_id, max_videos)
+        
+        # 기본 통계
+        stats = channel_info['statistics']
+        subscriber_count = int(stats.get('subscriberCount', 0))
+        total_views = int(stats.get('viewCount', 0))
+        video_count = int(stats.get('videoCount', 0))
+        
+        # 동영상 분석
+        if videos:
+            avg_views = sum(v['view_count'] for v in videos) / len(videos)
+            avg_likes = sum(v['like_count'] for v in videos) / len(videos)
+            avg_comments = sum(v['comment_count'] for v in videos) / len(videos)
+            
+            # 최근 30일 동영상
+            recent_videos = [v for v in videos if 
+                           (datetime.now() - datetime.strptime(v['published_at'][:19], '%Y-%m-%dT%H:%M:%S')).days <= 30]
+            
+            recent_avg_views = sum(v['view_count'] for v in recent_videos) / len(recent_videos) if recent_videos else 0
+        else:
+            avg_views = avg_likes = avg_comments = recent_avg_views = 0
+            recent_videos = []
+        
+        # 수익성 추정
+        estimated_monthly_revenue = self.estimate_revenue(subscriber_count, avg_views, recent_avg_views)
+        
+        return {
+            'channel_info': channel_info,
+            'videos': videos,
+            'analysis': {
+                'subscriber_count': subscriber_count,
+                'total_views': total_views,
+                'video_count': video_count,
+                'avg_views_per_video': avg_views,
+                'avg_likes_per_video': avg_likes,
+                'avg_comments_per_video': avg_comments,
+                'recent_videos_count': len(recent_videos),
+                'recent_avg_views': recent_avg_views,
+                'estimated_monthly_revenue': estimated_monthly_revenue,
+                'engagement_rate': (avg_likes + avg_comments) / max(avg_views, 1) * 100
             }
         }
-    </script>
-</body>
-</html>'''
+    
+    def estimate_revenue(self, subscribers, avg_views, recent_avg_views):
+        """수익 추정"""
+        # YouTube RPM (Revenue per Mille) 평균값들
+        base_rpm = 2.5  # 기본 RPM (달러)
+        
+        # 구독자 기반 보정
+        if subscribers > 1000000:
+            rpm_multiplier = 1.5
+        elif subscribers > 100000:
+            rpm_multiplier = 1.3
+        elif subscribers > 10000:
+            rpm_multiplier = 1.1
+        else:
+            rpm_multiplier = 0.8
+        
+        adjusted_rpm = base_rpm * rpm_multiplier
+        
+        # 최근 성과 기반 월 예상 수익
+        monthly_views = recent_avg_views * 30 if recent_avg_views > 0 else avg_views * 30
+        monthly_revenue = (monthly_views / 1000) * adjusted_rpm
+        
+        # 추가 수익원 추정 (스폰서십, 제품 판매 등)
+        if subscribers > 100000:
+            additional_revenue = monthly_revenue * 0.5
+        elif subscribers > 50000:
+            additional_revenue = monthly_revenue * 0.3
+        else:
+            additional_revenue = monthly_revenue * 0.1
+        
+        total_monthly_revenue = monthly_revenue + additional_revenue
+        
+        return {
+            'ad_revenue': monthly_revenue,
+            'additional_revenue': additional_revenue,
+            'total_monthly': total_monthly_revenue,
+            'annual_estimate': total_monthly_revenue * 12
+        }
 
-@app.route('/register', methods=['POST'])
-def register():
-    email = request.form.get('email')
-    password = request.form.get('password')
-    name = request.form.get('name')
-    
-    # 이메일 중복 체크
-    if User.query.filter_by(email=email).first():
-        flash('이미 가입된 이메일입니다.')
-        return redirect(url_for('index'))
-    
-    # 새 사용자 생성
-    user = User(
-        email=email,
-        password_hash=generate_password_hash(password),
-        name=name
-    )
-    
-    db.session.add(user)
-    db.session.commit()
-    
-    login_user(user)
-    return redirect(url_for('dashboard'))
+analyzer = PremiumYouTubeAnalyzer(API_KEY)
 
-@app.route('/login', methods=['POST'])
-def login():
-    email = request.form.get('email')
-    password = request.form.get('password')
-    
-    user = User.query.filter_by(email=email).first()
-    
-    if user and check_password_hash(user.password_hash, password):
-        login_user(user)
-        return redirect(url_for('dashboard'))
-    else:
-        flash('잘못된 이메일 또는 비밀번호입니다.')
-        return redirect(url_for('index'))
-
-@app.route('/logout')
-@login_required
-def logout():
-    logout_user()
-    return redirect(url_for('index'))
-
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    # 사용량 통계
-    current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    usage_count = UsageLog.query.filter(
-        UsageLog.user_id == current_user.id,
-        UsageLog.created_at >= current_month
-    ).count()
-    
-    limit = "무제한" if current_user.plan != 'free' else "5"
-    
-    return f'''<!DOCTYPE html>
+@app.route('/')
+def index():
+    return '''
+<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>대시보드 - YouTube Analytics Pro</title>
+    <title>YouTube Analytics Studio Pro</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
     <style>
-        body {{ font-family: 'Segoe UI', sans-serif; background: #f8f9fa; margin: 0; }}
-        .navbar {{ background: #007bff; color: white; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }}
-        .container {{ max-width: 1200px; margin: 2rem auto; padding: 0 2rem; }}
-        .dashboard-card {{ background: white; border-radius: 10px; padding: 2rem; margin-bottom: 2rem; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }}
-        .stat-item {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 1.5rem; border-radius: 10px; text-align: center; }}
-        .analyze-form {{ display: flex; gap: 1rem; align-items: end; }}
-        .form-group {{ flex: 1; }}
-        .form-group label {{ display: block; margin-bottom: 0.5rem; font-weight: 500; }}
-        .form-group input {{ width: 100%; padding: 0.75rem; border: 2px solid #e1e5e9; border-radius: 5px; }}
-        .btn {{ padding: 0.75rem 1.5rem; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }}
-        .btn:hover {{ background: #0056b3; }}
-        .results {{ margin-top: 2rem; padding: 1rem; background: #f8f9fa; border-radius: 5px; display: none; }}
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --secondary: #8b5cf6;
+            --accent: #06b6d4;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --background: #0f0f23;
+            --surface: #1a1a2e;
+            --surface-light: #16213e;
+            --text-primary: #ffffff;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border: #334155;
+            --gradient-1: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --gradient-2: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            --gradient-3: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
+            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
+            --shadow-lg: 0 8px 25px rgba(0, 0, 0, 0.2);
+            --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.25);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--background);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+        
+        /* Animated Background */
+        .bg-animation {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            opacity: 0.03;
+            overflow: hidden;
+        }
+        
+        .bg-animation::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 200%;
+            height: 200%;
+            background: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><pattern id='grid' width='10' height='10' patternUnits='userSpaceOnUse'><path d='M 10 0 L 0 0 0 10' fill='none' stroke='%23ffffff' stroke-width='0.5'/></pattern></defs><rect width='100' height='100' fill='url(%23grid)'/></svg>");
+            animation: drift 60s linear infinite;
+        }
+        
+        @keyframes drift {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(-50px, -50px); }
+        }
+        
+        /* Header */
+        .header {
+            background: var(--gradient-1);
+            padding: 4rem 2rem;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 320'><path fill='rgba(255,255,255,0.1)' fill-opacity='1' d='M0,96L48,112C96,128,192,160,288,160C384,160,480,128,576,112C672,96,768,96,864,112C960,128,1056,160,1152,160C1248,160,1344,128,1392,112L1440,96L1440,320L1392,320C1344,320,1248,320,1152,320C1056,320,960,320,864,320C768,320,672,320,576,320C480,320,384,320,288,320C192,320,96,320,48,320L0,320Z'></path></svg>");
+            background-size: 100% 100%;
+            animation: wave 20s ease-in-out infinite;
+        }
+        
+        @keyframes wave {
+            0%, 100% { transform: translateX(0); }
+            50% { transform: translateX(-50px); }
+        }
+        
+        .header-content {
+            position: relative;
+            z-index: 2;
+        }
+        
+        .header h1 {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 900;
+            margin-bottom: 1rem;
+            background: linear-gradient(45deg, #ffffff, #e2e8f0);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            letter-spacing: -0.02em;
+        }
+        
+        .header .subtitle {
+            font-size: 1.25rem;
+            opacity: 0.9;
+            font-weight: 400;
+            max-width: 600px;
+            margin: 0 auto 2rem;
+            color: #ffffff;
+        }
+        
+        .header-stats {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-top: 2rem;
+            flex-wrap: wrap;
+        }
+        
+        .stat-item {
+            text-align: center;
+            padding: 1rem;
+        }
+        
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 800;
+            display: block;
+            color: #ffffff !important;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        
+        .stat-label {
+            font-size: 0.875rem;
+            color: #ffffff !important;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
+        
+        /* Main Container */
+        .main-container {
+            max-width: 1400px;
+            margin: -2rem auto 4rem;
+            padding: 0 2rem;
+            position: relative;
+        }
+        
+        /* Search Section */
+        .search-section {
+            background: var(--surface);
+            border-radius: 24px;
+            padding: 3rem;
+            box-shadow: var(--shadow-xl);
+            margin-bottom: 3rem;
+            border: 1px solid var(--border);
+            backdrop-filter: blur(10px);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .search-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: var(--gradient-3);
+        }
+        
+        .search-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .search-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: var(--gradient-3);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .search-subtitle {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+        
+        .search-form {
+            display: grid;
+            grid-template-columns: 2fr 1fr auto;
+            gap: 1rem;
+            align-items: end;
+        }
+        
+        @media (max-width: 768px) {
+            .search-form {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .form-label {
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 0.75rem;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .form-input {
+            padding: 1rem 1.25rem;
+            background: var(--surface-light);
+            border: 2px solid transparent;
+            border-radius: 16px;
+            font-size: 1rem;
+            color: var(--text-primary);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            font-family: inherit;
+            box-shadow: var(--shadow-sm);
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1), var(--shadow-md);
+            transform: translateY(-1px);
+        }
+        
+        .form-input::placeholder {
+            color: var(--text-muted);
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 1rem 2rem;
+            font-weight: 600;
+            border-radius: 16px;
+            text-decoration: none;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 1rem;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(45deg, transparent, rgba(255,255,255,0.1), transparent);
+            transform: translateX(-100%);
+            transition: transform 0.6s;
+        }
+        
+        .btn:hover::before {
+            transform: translateX(100%);
+        }
+        
+        .btn-primary {
+            background: var(--gradient-1);
+            color: white;
+            box-shadow: var(--shadow-md);
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+        
+        .btn-primary:active {
+            transform: translateY(0);
+        }
+        
+        /* Loading Animation */
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 3rem;
+        }
+        
+        .loading.active {
+            display: block;
+        }
+        
+        .loading-spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid var(--border);
+            border-top: 4px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Results Section */
+        .results {
+            display: none;
+        }
+        
+        .results.active {
+            display: block;
+        }
+        
+        .results-header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+        
+        .channel-info {
+            background: var(--surface);
+            border-radius: 24px;
+            padding: 3rem;
+            margin-bottom: 3rem;
+            box-shadow: var(--shadow-xl);
+            border: 1px solid var(--border);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .channel-header {
+            display: flex;
+            align-items: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+        
+        .channel-avatar {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            border: 4px solid var(--border);
+            box-shadow: var(--shadow-md);
+        }
+        
+        .channel-details h2 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        
+        .channel-details p {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            line-height: 1.6;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+            margin: 3rem 0;
+        }
+        
+        .stat-card {
+            background: var(--surface-light);
+            padding: 2rem;
+            border-radius: 20px;
+            text-align: center;
+            border: 1px solid var(--border);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--gradient-1);
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover::before {
+            transform: scaleX(1);
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-lg);
+        }
+        
+        .stat-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+        }
+        
+        .stat-title {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        /* Chart Container */
+        .chart-container {
+            background: var(--surface);
+            border-radius: 24px;
+            padding: 2rem;
+            margin: 2rem 0;
+            box-shadow: var(--shadow-xl);
+            border: 1px solid var(--border);
+        }
+        
+        .chart-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+        
+        /* Revenue Section */
+        .revenue-section {
+            background: var(--gradient-2);
+            border-radius: 24px;
+            padding: 3rem;
+            margin: 3rem 0;
+            text-align: center;
+            color: white;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .revenue-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.1) 0%, transparent 70%);
+        }
+        
+        .revenue-content {
+            position: relative;
+            z-index: 2;
+        }
+        
+        .revenue-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+        
+        .revenue-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        
+        .revenue-item {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 1.5rem;
+            border-radius: 16px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .revenue-amount {
+            font-size: 1.75rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+        }
+        
+        .revenue-label {
+            font-size: 0.875rem;
+            opacity: 0.9;
+        }
+        
+        /* Footer */
+        .footer {
+            background: var(--surface);
+            padding: 3rem 2rem;
+            text-align: center;
+            border-top: 1px solid var(--border);
+            margin-top: 4rem;
+        }
+        
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .footer h3 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            background: var(--gradient-3);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .footer p {
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+        
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            flex-wrap: wrap;
+        }
+        
+        .footer-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+        
+        .footer-link:hover {
+            color: var(--primary);
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header {
+                padding: 3rem 1rem;
+            }
+            
+            .main-container {
+                padding: 0 1rem;
+            }
+            
+            .search-section,
+            .channel-info {
+                padding: 2rem;
+                border-radius: 16px;
+            }
+            
+            .channel-header {
+                flex-direction: column;
+                text-align: center;
+            }
+            
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header-stats {
+                gap: 1rem;
+            }
+        }
+        
+        /* Animations */
+        .fade-in {
+            animation: fadeIn 0.6s ease-out;
+        }
+        
+        .slide-up {
+            animation: slideUp 0.6s ease-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* Video Tables */
+        .video-section {
+            background: var(--surface);
+            border-radius: 24px;
+            padding: 2rem;
+            margin: 2rem 0;
+            box-shadow: var(--shadow-xl);
+            border: 1px solid var(--border);
+        }
+        
+        .video-section h3 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .video-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        
+        .video-table th,
+        .video-table td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .video-table th {
+            background: var(--surface-light);
+            font-weight: 600;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .video-table tr:hover {
+            background: var(--surface-light);
+            transform: scale(1.01);
+            transition: all 0.2s ease;
+        }
+        
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .pagination-info {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .pagination-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1.5rem;
+            padding: 1rem;
+        }
+        
+        .page-btn {
+            padding: 0.5rem 0.75rem;
+            border: 2px solid #007bff;
+            background: #007bff;
+            color: white;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+            font-weight: 500;
+            min-width: 40px;
+            text-align: center;
+        }
+        
+        .page-btn:hover:not(:disabled) {
+            background: #0056b3;
+            border-color: #0056b3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+        }
+        
+        .page-btn.active {
+            background: #28a745;
+            color: white;
+            border-color: #28a745;
+            box-shadow: 0 2px 8px rgba(40, 167, 69, 0.3);
+        }
+        
+        .page-btn:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+            background: #dc3545;
+            color: white;
+            border-color: #dc3545;
+        }
+        
+        .page-info {
+            margin: 0 1rem;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .video-thumbnail {
+            width: 120px;
+            height: 68px;
+            border-radius: 8px;
+            object-fit: cover;
+            box-shadow: var(--shadow-sm);
+        }
+        
+        .video-title {
+            font-weight: 500;
+            color: var(--text-primary);
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .video-title:hover {
+            color: var(--primary);
+            cursor: pointer;
+        }
+        
+        .video-stats {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        
+        .stat-number {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+        
+        .video-date {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        
+        .video-modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px);
+        }
+        
+        .modal-content {
+            background-color: var(--surface);
+            margin: 5% auto;
+            padding: 2rem;
+            border-radius: 20px;
+            width: 90%;
+            max-width: 800px;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow-xl);
+        }
+        
+        .close-modal {
+            color: var(--text-secondary);
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: color 0.3s ease;
+        }
+        
+        .close-modal:hover {
+            color: var(--primary);
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .tab {
+            padding: 0.75rem 1.5rem;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        
+        .tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        /* Small Buttons */
+        .btn-small {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+        
+        .btn-analyze {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .btn-analyze:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+        }
+        
+        .btn-script {
+            background: linear-gradient(135deg, #FF6B6B, #FF8E8E);
+            color: white;
+            border: none;
+            padding: 0.6rem 1.2rem;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);
+            transition: all 0.3s ease;
+        }
+        
+        .btn-script:hover {
+            background: linear-gradient(135deg, #FF5252, #FF7979);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 107, 107, 0.4);
+        }
+        
+        .btn-script i {
+            margin-right: 0.5rem;
+        }
+        
+        .btn-details {
+            background: var(--secondary);
+            color: white;
+        }
+        
+        .btn-details:hover {
+            background: #7c3aed;
+            transform: translateY(-1px);
+        }
+        
+        /* Loading for individual actions */
+        .btn-loading {
+            opacity: 0.7;
+            pointer-events: none;
+        }
+        
+        .btn-loading::after {
+            content: '';
+            width: 12px;
+            height: 12px;
+            border: 2px solid transparent;
+            border-top: 2px solid currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 0.3rem;
+        }
+        
+        /* Script Modal */
+        .script-modal {
+            display: none;
+            position: fixed;
+            z-index: 1001;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px);
+        }
+        
+        .script-modal-content {
+            background-color: #ffffff;
+            margin: 5% auto;
+            padding: 2rem;
+            border-radius: 20px;
+            width: 90%;
+            max-width: 900px;
+            max-height: 80vh;
+            overflow-y: auto;
+            border: 2px solid #ddd;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            position: relative;
+        }
+        
+        .script-text {
+            background: var(--surface-light);
+            padding: 1.5rem;
+            border-radius: 12px;
+            margin: 1rem 0;
+            line-height: 1.8;
+            color: var(--text-primary);
+            border-left: 4px solid var(--primary);
+        }
+        
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: var(--background);
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary);
+        }
     </style>
 </head>
 <body>
-    <div class="navbar">
-        <h2>YouTube Analytics Pro</h2>
-        <div>
-            <span>{current_user.name}님 ({current_user.plan.upper()})</span>
-            <a href="/logout" style="color: white; margin-left: 1rem;">로그아웃</a>
-        </div>
-    </div>
+    <div class="bg-animation"></div>
     
-    <div class="container">
-        <div class="dashboard-card">
-            <h3>📊 사용 현황</h3>
-            <div class="stats">
+    <header class="header">
+        <div class="header-content">
+            <h1>YouTube Analytics Studio Pro</h1>
+            <p class="subtitle">AI 기반 채널 성과 분석 및 수익성 예측 플랫폼</p>
+            
+            <div class="header-stats">
                 <div class="stat-item">
-                    <h4>이번 달 사용량</h4>
-                    <h2>{usage_count} / {limit}</h2>
+                    <span class="stat-number">AI</span>
+                    <span class="stat-label">분석 엔진</span>
                 </div>
                 <div class="stat-item">
-                    <h4>요금제</h4>
-                    <h2>{current_user.plan.upper()}</h2>
+                    <span class="stat-number">실시간</span>
+                    <span class="stat-label">데이터 수집</span>
                 </div>
                 <div class="stat-item">
-                    <h4>가입일</h4>
-                    <h2>{current_user.created_at.strftime('%Y-%m-%d')}</h2>
+                    <span class="stat-number">무료</span>
+                    <span class="stat-label">분석 도구</span>
                 </div>
             </div>
         </div>
-        
-        <div class="dashboard-card">
-            <h3>🔍 채널 분석</h3>
-            <form class="analyze-form" onsubmit="analyzeChannel(event)">
+    </header>
+    
+    <main class="main-container">
+        <section class="search-section fade-in">
+            <div class="search-header">
+                <h2 class="search-title">채널 분석 시작하기</h2>
+                <p class="search-subtitle">YouTube 채널 URL 또는 채널명을 입력하여 상세한 성과 분석을 받아보세요</p>
+            </div>
+            
+            <form class="search-form" onsubmit="analyzeChannel(event)">
                 <div class="form-group">
-                    <label>YouTube 채널 URL 또는 채널명</label>
-                    <input type="text" id="channelInput" placeholder="예: https://youtube.com/@channel" required>
+                    <label class="form-label">채널 정보</label>
+                    <input 
+                        type="text" 
+                        class="form-input" 
+                        id="channelInput" 
+                        placeholder="예: https://youtube.com/@channel 또는 채널명"
+                        required
+                    >
                 </div>
-                <button type="submit" class="btn">분석 시작</button>
+                <div class="form-group">
+                    <label class="form-label">분석할 동영상 수</label>
+                    <select class="form-input" id="videoCount">
+                        <option value="20">20개</option>
+                        <option value="50" selected>50개</option>
+                        <option value="100">100개</option>
+                        <option value="200">200개</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-chart-line"></i>
+                    분석 시작
+                </button>
             </form>
-            <div id="results" class="results"></div>
+        </section>
+        
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+            <p>채널을 분석하는 중입니다...</p>
+            <p style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.5rem;">
+                최신 데이터를 수집하고 AI 알고리즘으로 분석하고 있습니다
+            </p>
         </div>
         
-        <div class="dashboard-card">
-            <h3>💎 요금제 업그레이드</h3>
-            <p>더 많은 기능과 무제한 사용을 원하시나요?</p>
-            <button class="btn" onclick="window.location.href='/upgrade'">업그레이드</button>
+        <div class="results" id="results">
+            <!-- 결과가 여기에 동적으로 삽입됩니다 -->
+        </div>
+    </main>
+    
+    <!-- Video Detail Modal -->
+    <div id="videoModal" class="video-modal">
+        <div class="modal-content">
+            <span class="close-modal" onclick="closeVideoModal()">&times;</span>
+            <div id="modalContent">
+                <!-- 동영상 상세 정보가 여기에 표시됩니다 -->
+            </div>
         </div>
     </div>
     
+    <!-- Script Modal -->
+    <div id="scriptModal" class="script-modal">
+        <div class="script-modal-content">
+            <span class="close-modal" onclick="closeScriptModal()" style="position: absolute; top: 1rem; right: 1.5rem; color: #333; font-size: 2rem; font-weight: bold; cursor: pointer; z-index: 10;">&times;</span>
+            <div id="scriptModalContent">
+                <!-- 스크립트 내용이 여기에 표시됩니다 -->
+            </div>
+        </div>
+    </div>
+    
+    <footer class="footer">
+        <div class="footer-content">
+            <h3>YouTube Analytics Studio Pro</h3>
+            <p>전문적인 YouTube 채널 분석으로 크리에이터의 성공을 지원합니다</p>
+        </div>
+    </footer>
+    
     <script>
-        async function analyzeChannel(event) {{
+        async function analyzeChannel(event) {
             event.preventDefault();
             
-            const channelInput = document.getElementById('channelInput').value;
+            const channelInput = document.getElementById('channelInput').value.trim();
+            const videoCount = document.getElementById('videoCount').value;
+            const loading = document.getElementById('loading');
             const results = document.getElementById('results');
             
-            results.innerHTML = '<p>분석 중입니다...</p>';
-            results.style.display = 'block';
+            if (!channelInput) {
+                alert('채널 정보를 입력해주세요.');
+                return;
+            }
             
-            try {{
-                const response = await fetch('/api/analyze', {{
+            // 로딩 표시
+            results.classList.remove('active');
+            loading.classList.add('active');
+            
+            try {
+                const response = await fetch('/analyze', {
                     method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ channel_query: channelInput }})
-                }});
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        channel_query: channelInput,
+                        max_videos: parseInt(videoCount)
+                    })
+                });
                 
                 const data = await response.json();
                 
-                if (data.error) {{
-                    results.innerHTML = `<p style="color: red;">오류: ${{data.error}}</p>`;
-                }} else {{
-                    results.innerHTML = `
-                        <h4>분석 결과: ${{data.channel_name}}</h4>
-                        <p>구독자: ${{data.subscriber_count?.toLocaleString() || 'N/A'}}</p>
-                        <p>총 조회수: ${{data.view_count?.toLocaleString() || 'N/A'}}</p>
-                        <p>동영상 수: ${{data.video_count?.toLocaleString() || 'N/A'}}</p>
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                displayResults(data);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                results.innerHTML = `
+                    <div style="text-align: center; padding: 3rem; background: var(--surface); border-radius: 24px; border: 1px solid var(--border);">
+                        <i class="fas fa-exclamation-triangle" style="font-size: 3rem; color: var(--error); margin-bottom: 1rem;"></i>
+                        <h3>분석 중 오류가 발생했습니다</h3>
+                        <p style="color: var(--text-secondary); margin-top: 0.5rem;">${error.message}</p>
+                        <button class="btn btn-primary" onclick="location.reload()" style="margin-top: 1rem;">
+                            다시 시도
+                        </button>
+                    </div>
+                `;
+                results.classList.add('active');
+            } finally {
+                loading.classList.remove('active');
+            }
+        }
+        
+        function displayResults(data) {
+            const results = document.getElementById('results');
+            const channelInfo = data.channel_info;
+            const analysis = data.analysis;
+            const videos = data.videos;
+            const videoCount = document.getElementById('videoCount').value;
+            
+            // 숫자 포맷팅 함수
+            function formatNumber(num) {
+                return new Intl.NumberFormat('ko-KR').format(num);
+            }
+            
+            // 간단한 단위 표시 (차트용)
+            function formatNumberShort(num) {
+                if (num >= 1000000) {
+                    return (num / 1000000).toFixed(1) + 'M';
+                } else if (num >= 1000) {
+                    return (num / 1000).toFixed(1) + 'K';
+                }
+                return num.toLocaleString();
+            }
+            
+            // 전역 스코프에서 접근 가능하도록 설정
+            window.formatNumber = formatNumber;
+            window.formatNumberShort = formatNumberShort;
+            
+            function formatCurrency(amount) {
+                return new Intl.NumberFormat('ko-KR', {
+                    style: 'currency',
+                    currency: 'USD',
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 0
+                }).format(amount);
+            }
+            
+            results.innerHTML = `
+                <div class="results-header slide-up">
+                    <h2>분석 결과</h2>
+                    <p style="color: var(--text-secondary); font-size: 1.1rem;">
+                        ${channelInfo.snippet.title}의 상세한 성과 분석 리포트
+                    </p>
+                </div>
+                
+                <div class="channel-info slide-up">
+                    <div class="channel-header">
+                        <img 
+                            src="${channelInfo.snippet.thumbnails.high.url}" 
+                            alt="${channelInfo.snippet.title}" 
+                            class="channel-avatar"
+                        >
+                        <div class="channel-details">
+                            <h2>${channelInfo.snippet.title}</h2>
+                            <p>${channelInfo.snippet.description.substring(0, 200)}...</p>
+                            <p style="margin-top: 1rem; color: var(--text-muted); font-size: 0.875rem;">
+                                <i class="fas fa-calendar"></i>
+                                개설일: ${new Date(channelInfo.snippet.publishedAt).toLocaleDateString('ko-KR')}
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="stats-grid slide-up">
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-users"></i></div>
+                        <div class="stat-value">${formatNumber(analysis.subscriber_count)}</div>
+                        <div class="stat-title">구독자</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-eye"></i></div>
+                        <div class="stat-value">${formatNumber(analysis.total_views)}</div>
+                        <div class="stat-title">총 조회수</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-video"></i></div>
+                        <div class="stat-value">${formatNumber(analysis.video_count)}</div>
+                        <div class="stat-title">동영상 수</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-chart-line"></i></div>
+                        <div class="stat-value">${formatNumber(Math.round(analysis.avg_views_per_video))}</div>
+                        <div class="stat-title">평균 조회수</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-thumbs-up"></i></div>
+                        <div class="stat-value">${formatNumber(Math.round(analysis.avg_likes_per_video))}</div>
+                        <div class="stat-title">평균 좋아요</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon"><i class="fas fa-heart"></i></div>
+                        <div class="stat-value">${analysis.engagement_rate.toFixed(2)}%</div>
+                        <div class="stat-title">참여도</div>
+                    </div>
+                </div>
+                
+                <div class="revenue-section slide-up">
+                    <div class="revenue-content">
+                        <h3 class="revenue-title">💰 예상 수익 분석</h3>
+                        <p style="opacity: 0.9; margin-bottom: 2rem;">
+                            AI 알고리즘 기반 수익성 분석 결과
+                        </p>
+                        
+                        <div class="revenue-grid">
+                            <div class="revenue-item">
+                                <div class="revenue-amount">${formatCurrency(analysis.estimated_monthly_revenue.ad_revenue)}</div>
+                                <div class="revenue-label">월 광고 수익</div>
+                            </div>
+                            <div class="revenue-item">
+                                <div class="revenue-amount">${formatCurrency(analysis.estimated_monthly_revenue.additional_revenue)}</div>
+                                <div class="revenue-label">월 추가 수익</div>
+                            </div>
+                            <div class="revenue-item">
+                                <div class="revenue-amount">${formatCurrency(analysis.estimated_monthly_revenue.total_monthly)}</div>
+                                <div class="revenue-label">월 총 예상 수익</div>
+                            </div>
+                            <div class="revenue-item">
+                                <div class="revenue-amount">${formatCurrency(analysis.estimated_monthly_revenue.annual_estimate)}</div>
+                                <div class="revenue-label">연간 예상 수익</div>
+                            </div>
+                        </div>
+                        
+                        <p style="font-size: 0.875rem; opacity: 0.8; margin-top: 1.5rem;">
+                            * 예상 수익은 업계 평균 RPM, 구독자 수, 조회수 등을 종합하여 산출된 추정값입니다.
+                        </p>
+                    </div>
+                </div>
+                
+                <div class="chart-container slide-up">
+                    <h3 class="chart-title">📊 최근 영상 성과 트렌드</h3>
+                    <canvas id="performanceChart" width="400" height="200"></canvas>
+                </div>
+                
+                <div class="video-section slide-up">
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab('popular')">🔥 인기 동영상</button>
+                        <button class="tab" onclick="switchTab('recent')">⏰ 최신 동영상</button>
+                    </div>
+                    
+                    <div id="popular-content" class="tab-content active">
+                        <div class="table-header">
+                            <h3><i class="fas fa-fire"></i> 인기 동영상 (${videos.length}개)</h3>
+                            <div class="pagination-info">
+                                <span id="popular-page-info">페이지 1</span>
+                            </div>
+                        </div>
+                        <table class="video-table">
+                            <thead>
+                                <tr>
+                                    <th>썸네일</th>
+                                    <th>제목</th>
+                                    <th>조회수</th>
+                                    <th>좋아요</th>
+                                    <th>댓글</th>
+                                    <th>게시일</th>
+                                </tr>
+                            </thead>
+                            <tbody id="popular-table-body">
+                                <!-- 페이징 처리된 내용이 여기에 표시됩니다 -->
+                            </tbody>
+                        </table>
+                        <div class="pagination-controls" id="popular-pagination">
+                            <!-- 페이징 버튼들이 여기에 표시됩니다 -->
+                        </div>
+                    </div>
+                    
+                    <div id="recent-content" class="tab-content">
+                        <div class="table-header">
+                            <h3><i class="fas fa-clock"></i> 최신 동영상 (${videos.length}개)</h3>
+                            <div class="pagination-info">
+                                <span id="recent-page-info">페이지 1</span>
+                            </div>
+                        </div>
+                        <table class="video-table">
+                            <thead>
+                                <tr>
+                                    <th>썸네일</th>
+                                    <th>제목</th>
+                                    <th>조회수</th>
+                                    <th>좋아요</th>
+                                    <th>댓글</th>
+                                    <th>게시일</th>
+                                </tr>
+                            </thead>
+                            <tbody id="recent-table-body">
+                                <!-- 페이징 처리된 내용이 여기에 표시됩니다 -->
+                            </tbody>
+                        </table>
+                        <div class="pagination-controls" id="recent-pagination">
+                            <!-- 페이징 버튼들이 여기에 표시됩니다 -->
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // 차트 생성
+            createPerformanceChart(videos.slice(0, 10));
+            
+            // Store videos data globally for modal
+            currentVideos = videos;
+            
+            // Initialize pagination
+            initializePagination();
+            
+            results.classList.add('active');
+        }
+        
+        function createPerformanceChart(videos) {
+            const ctx = document.getElementById('performanceChart').getContext('2d');
+            
+            // 데이터 준비
+            const labels = videos.map(v => v.title.length > 20 ? v.title.substring(0, 20) + '...' : v.title);
+            const viewData = videos.map(v => v.view_count);
+            const likeData = videos.map(v => v.like_count);
+            
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '조회수',
+                        data: viewData,
+                        backgroundColor: 'rgba(99, 102, 241, 0.8)',
+                        borderColor: 'rgba(99, 102, 241, 1)',
+                        borderWidth: 2,
+                        borderRadius: 8,
+                        yAxisID: 'y'
+                    }, {
+                        label: '좋아요',
+                        data: likeData,
+                        type: 'line',
+                        borderColor: 'rgba(139, 92, 246, 1)',
+                        backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                        borderWidth: 3,
+                        fill: true,
+                        tension: 0.4,
+                        yAxisID: 'y1'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    interaction: {
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#94a3b8',
+                                font: {
+                                    size: 12
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                color: '#64748b',
+                                font: {
+                                    size: 10
+                                }
+                            },
+                            grid: {
+                                color: '#334155'
+                            }
+                        },
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            ticks: {
+                                color: '#64748b'
+                            },
+                            grid: {
+                                color: '#334155'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            ticks: {
+                                color: '#64748b'
+                            },
+                            grid: {
+                                drawOnChartArea: false,
+                                color: '#334155'
+                            },
+                        }
+                    }
+                }
+            });
+        }
+        
+        // 페이지 로드 시 애니메이션
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('YouTube Analytics Studio Pro 시작됨');
+            
+            // Intersection Observer for animations
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.style.animationDelay = `${Math.random() * 0.3}s`;
+                        entry.target.classList.add('fade-in');
+                    }
+                });
+            }, { threshold: 0.1 });
+            
+            // 모든 애니메이션 대상 요소 관찰
+            document.querySelectorAll('.slide-up').forEach(el => {
+                observer.observe(el);
+            });
+        });
+        
+        // Tab switching function
+        function switchTab(tabName) {
+            // Remove active class from all tabs and contents
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            
+            // Add active class to selected tab and content
+            event.target.classList.add('active');
+            document.getElementById(tabName + '-content').classList.add('active');
+        }
+        
+        // Pagination variables
+        let popularCurrentPage = 1;
+        let recentCurrentPage = 1;
+        const videosPerPage = 10;
+        
+        // Initialize pagination
+        function initializePagination() {
+            if (currentVideos && currentVideos.length > 0) {
+                setupPopularPagination();
+                setupRecentPagination();
+            }
+        }
+        
+        // Setup popular videos pagination
+        function setupPopularPagination() {
+            const sortedVideos = [...currentVideos].sort((a, b) => b.view_count - a.view_count);
+            const totalPages = Math.ceil(sortedVideos.length / videosPerPage);
+            
+            displayPopularVideos(sortedVideos, 1);
+            createPaginationControls('popular', totalPages, 1);
+        }
+        
+        // Setup recent videos pagination
+        function setupRecentPagination() {
+            const sortedVideos = [...currentVideos].sort((a, b) => new Date(b.published_at) - new Date(a.published_at));
+            const totalPages = Math.ceil(sortedVideos.length / videosPerPage);
+            
+            displayRecentVideos(sortedVideos, 1);
+            createPaginationControls('recent', totalPages, 1);
+        }
+        
+        // Display popular videos for a specific page
+        function displayPopularVideos(videos, page) {
+            const startIndex = (page - 1) * videosPerPage;
+            const endIndex = startIndex + videosPerPage;
+            const pageVideos = videos.slice(startIndex, endIndex);
+            
+            const tbody = document.getElementById('popular-table-body');
+            tbody.innerHTML = pageVideos.map(video => `
+                <tr>
+                    <td>
+                        <img src="https://img.youtube.com/vi/${video.video_id}/mqdefault.jpg" 
+                             alt="썸네일" class="video-thumbnail"
+                             onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
+                             style="cursor: pointer;">
+                    </td>
+                    <td>
+                        <div class="video-title" title="${video.title}"
+                             onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
+                             style="cursor: pointer;">
+                            ${video.title}
+                        </div>
+                        <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <button class="btn-small btn-analyze" onclick="analyzeVideo('${video.video_id}', event);">
+                                <i class="fas fa-chart-bar"></i> 분석
+                            </button>
+                            <button class="btn-small btn-script" onclick="getVideoScript('${video.video_id}', event);">
+                                <i class="fas fa-file-text"></i> 자막/스크립트
+                            </button>
+                            <button class="btn-small btn-details" onclick="event.stopPropagation(); showVideoDetails('${video.video_id}');">
+                                <i class="fas fa-info-circle"></i> 상세
+                            </button>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.view_count)}</span>
+                            <span class="stat-label">조회수</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.like_count)}</span>
+                            <span class="stat-label">좋아요</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.comment_count)}</span>
+                            <span class="stat-label">댓글</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-date">
+                            ${new Date(video.published_at).toLocaleDateString('ko-KR')}
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+            
+            // Update page info
+            document.getElementById('popular-page-info').textContent = 
+                `페이지 ${page} / ${Math.ceil(videos.length / videosPerPage)} (${videos.length}개 영상 중 ${startIndex + 1}-${Math.min(endIndex, videos.length)})`;
+        }
+        
+        // Display recent videos for a specific page
+        function displayRecentVideos(videos, page) {
+            const startIndex = (page - 1) * videosPerPage;
+            const endIndex = startIndex + videosPerPage;
+            const pageVideos = videos.slice(startIndex, endIndex);
+            
+            const tbody = document.getElementById('recent-table-body');
+            tbody.innerHTML = pageVideos.map(video => `
+                <tr>
+                    <td>
+                        <img src="https://img.youtube.com/vi/${video.video_id}/mqdefault.jpg" 
+                             alt="썸네일" class="video-thumbnail"
+                             onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
+                             style="cursor: pointer;">
+                    </td>
+                    <td>
+                        <div class="video-title" title="${video.title}"
+                             onclick="window.open('https://youtube.com/watch?v=${video.video_id}', '_blank')"
+                             style="cursor: pointer;">
+                            ${video.title}
+                        </div>
+                        <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <button class="btn-small btn-analyze" onclick="analyzeVideo('${video.video_id}', event);">
+                                <i class="fas fa-chart-bar"></i> 분석
+                            </button>
+                            <button class="btn-small btn-script" onclick="getVideoScript('${video.video_id}', event);">
+                                <i class="fas fa-file-text"></i> 자막/스크립트
+                            </button>
+                            <button class="btn-small btn-details" onclick="event.stopPropagation(); showVideoDetails('${video.video_id}');">
+                                <i class="fas fa-info-circle"></i> 상세
+                            </button>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.view_count)}</span>
+                            <span class="stat-label">조회수</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.like_count)}</span>
+                            <span class="stat-label">좋아요</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-stats">
+                            <span class="stat-number">${formatNumber(video.comment_count)}</span>
+                            <span class="stat-label">댓글</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="video-date">
+                            ${new Date(video.published_at).toLocaleDateString('ko-KR')}
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+            
+            // Update page info
+            document.getElementById('recent-page-info').textContent = 
+                `페이지 ${page} / ${Math.ceil(videos.length / videosPerPage)} (${videos.length}개 영상 중 ${startIndex + 1}-${Math.min(endIndex, videos.length)})`;
+        }
+        
+        // Create pagination controls
+        function createPaginationControls(type, totalPages, currentPage) {
+            const container = document.getElementById(`${type}-pagination`);
+            
+            if (totalPages <= 1) {
+                container.innerHTML = '';
+                return;
+            }
+            
+            let html = '';
+            
+            // Previous button
+            html += `<button class="page-btn" onclick="changePage('${type}', ${currentPage - 1})" 
+                     ${currentPage <= 1 ? 'disabled' : ''}>‹ 이전</button>`;
+            
+            // Page numbers
+            const maxVisiblePages = 5;
+            let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+            let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+            
+            if (endPage - startPage + 1 < maxVisiblePages) {
+                startPage = Math.max(1, endPage - maxVisiblePages + 1);
+            }
+            
+            if (startPage > 1) {
+                html += `<button class="page-btn" onclick="changePage('${type}', 1)">1</button>`;
+                if (startPage > 2) {
+                    html += `<span class="page-info">...</span>`;
+                }
+            }
+            
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<button class="page-btn ${i === currentPage ? 'active' : ''}" 
+                         onclick="changePage('${type}', ${i})">${i}</button>`;
+            }
+            
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    html += `<span class="page-info">...</span>`;
+                }
+                html += `<button class="page-btn" onclick="changePage('${type}', ${totalPages})">${totalPages}</button>`;
+            }
+            
+            // Next button
+            html += `<button class="page-btn" onclick="changePage('${type}', ${currentPage + 1})" 
+                     ${currentPage >= totalPages ? 'disabled' : ''}>다음 ›</button>`;
+            
+            container.innerHTML = html;
+        }
+        
+        // Change page
+        function changePage(type, page) {
+            if (type === 'popular') {
+                popularCurrentPage = page;
+                const sortedVideos = [...currentVideos].sort((a, b) => b.view_count - a.view_count);
+                const totalPages = Math.ceil(sortedVideos.length / videosPerPage);
+                displayPopularVideos(sortedVideos, page);
+                createPaginationControls('popular', totalPages, page);
+            } else if (type === 'recent') {
+                recentCurrentPage = page;
+                const sortedVideos = [...currentVideos].sort((a, b) => new Date(b.published_at) - new Date(a.published_at));
+                const totalPages = Math.ceil(sortedVideos.length / videosPerPage);
+                displayRecentVideos(sortedVideos, page);
+                createPaginationControls('recent', totalPages, page);
+            }
+        }
+        
+        // Global videos data for modal
+        let currentVideos = [];
+        
+        // Show video details in modal
+        function showVideoDetails(videoId) {
+            const video = currentVideos.find(v => v.video_id === videoId);
+            if (!video) return;
+            
+            const modalContent = document.getElementById('modalContent');
+            modalContent.innerHTML = `
+                <h2>${video.title}</h2>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin: 2rem 0;">
+                    <div>
+                        <img src="https://img.youtube.com/vi/${video.video_id}/maxresdefault.jpg" 
+                             alt="썸네일" style="width: 100%; border-radius: 12px;">
+                    </div>
+                    <div>
+                        <div style="display: grid; gap: 1rem;">
+                            <div>
+                                <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">📊 성과 지표</h4>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                                    <div style="background: var(--surface-light); padding: 1rem; border-radius: 8px;">
+                                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--primary);">
+                                            ${formatNumber(video.view_count)}
+                                        </div>
+                                        <div style="color: var(--text-secondary); font-size: 0.875rem;">조회수</div>
+                                    </div>
+                                    <div style="background: var(--surface-light); padding: 1rem; border-radius: 8px;">
+                                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--success);">
+                                            ${formatNumber(video.like_count)}
+                                        </div>
+                                        <div style="color: var(--text-secondary); font-size: 0.875rem;">좋아요</div>
+                                    </div>
+                                    <div style="background: var(--surface-light); padding: 1rem; border-radius: 8px;">
+                                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--accent);">
+                                            ${formatNumber(video.comment_count)}
+                                        </div>
+                                        <div style="color: var(--text-secondary); font-size: 0.875rem;">댓글</div>
+                                    </div>
+                                    <div style="background: var(--surface-light); padding: 1rem; border-radius: 8px;">
+                                        <div style="font-size: 1.5rem; font-weight: 700; color: var(--warning);">
+                                            ${((video.like_count / Math.max(video.view_count, 1)) * 100).toFixed(2)}%
+                                        </div>
+                                        <div style="color: var(--text-secondary); font-size: 0.875rem;">좋아요율</div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">📅 게시 정보</h4>
+                                <p style="color: var(--text-primary);">
+                                    ${new Date(video.published_at).toLocaleDateString('ko-KR', {
+                                        year: 'numeric',
+                                        month: 'long',
+                                        day: 'numeric',
+                                        weekday: 'long'
+                                    })}
+                                </p>
+                                <p style="color: var(--text-secondary); font-size: 0.875rem; margin-top: 0.5rem;">
+                                    ${Math.floor((new Date() - new Date(video.published_at)) / (1000 * 60 * 60 * 24))}일 전 게시
+                                </p>
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top: 2rem;">
+                            <a href="https://youtube.com/watch?v=${video.video_id}" 
+                               target="_blank" 
+                               class="btn btn-primary" 
+                               style="text-decoration: none; display: inline-flex;">
+                                <i class="fab fa-youtube"></i>
+                                YouTube에서 보기
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('videoModal').style.display = 'block';
+        }
+        
+        // Close video modal
+        function closeVideoModal() {
+            document.getElementById('videoModal').style.display = 'none';
+        }
+        
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const videoModal = document.getElementById('videoModal');
+            const scriptModal = document.getElementById('scriptModal');
+            if (event.target === videoModal) {
+                videoModal.style.display = 'none';
+            }
+            if (event.target === scriptModal) {
+                scriptModal.style.display = 'none';
+            }
+        }
+        
+        // Individual video analysis
+        async function analyzeVideo(videoId, event) {
+            event.stopPropagation();
+            const button = event.target.closest('.btn-analyze');
+            const originalContent = button.innerHTML;
+            
+            // Show loading state
+            button.classList.add('btn-loading');
+            button.innerHTML = '<i class="fas fa-chart-bar"></i> 분석 중...';
+            
+            try {
+                const response = await fetch('/analyze_video', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        video_id: videoId
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // Show analysis in modal
+                showVideoAnalysis(data);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                alert('동영상 분석 중 오류가 발생했습니다: ' + error.message);
+            } finally {
+                // Reset button state
+                button.classList.remove('btn-loading');
+                button.innerHTML = originalContent;
+            }
+        }
+        
+        // Get video script/transcript
+        async function getVideoScript(videoId, event) {
+            console.log('getVideoScript 호출됨, videoId:', videoId);
+            event.stopPropagation();
+            
+            const button = event.target.closest('.btn-script');
+            const originalContent = button.innerHTML;
+            
+            // 로딩 상태 표시
+            button.classList.add('btn-loading');
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 로딩중...';
+            
+            try {
+                console.log('API 요청 시작');
+                const response = await fetch('/get_video_script', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        video_id: videoId
+                    })
+                });
+                
+                console.log('응답 받음:', response.status);
+                const data = await response.json();
+                console.log('응답 데이터:', data);
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // 모달에 스크립트 표시
+                showVideoScript(data);
+                
+            } catch (error) {
+                console.error('에러 발생:', error);
+                showVideoScript({
+                    video_id: videoId,
+                    title: '오류 발생',
+                    script: null,
+                    summary: '오류가 발생했습니다: ' + error.message,
+                    language: null
+                });
+                
+            } finally {
+                // 버튼 상태 복구
+                button.classList.remove('btn-loading');
+                button.innerHTML = originalContent;
+            }
+        }
+        
+        // Show video analysis modal
+        function showVideoAnalysis(data) {
+            const modalContent = document.getElementById('modalContent');
+            modalContent.innerHTML = `
+                <h2>${data.title}</h2>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin: 2rem 0;">
+                    <div>
+                        <img src="https://img.youtube.com/vi/${data.video_id}/maxresdefault.jpg" 
+                             alt="썸네일" style="width: 100%; border-radius: 12px;">
+                    </div>
+                    <div>
+                        <h3 style="margin-bottom: 1rem; color: var(--primary);">📊 상세 분석 결과</h3>
+                        <div style="display: grid; gap: 1rem;">
+                            <div style="background: var(--surface-light); padding: 1rem; border-radius: 8px;">
+                                <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">성과 지표</h4>
+                                <p><strong>조회수:</strong> ${formatNumber(data.view_count)}</p>
+                                <p><strong>좋아요:</strong> ${formatNumber(data.like_count)}</p>
+                                <p><strong>댓글:</strong> ${formatNumber(data.comment_count)}</p>
+                                <p><strong>좋아요율:</strong> ${((data.like_count / Math.max(data.view_count, 1)) * 100).toFixed(2)}%</p>
+                            </div>
+                            
+                            <div style="background: var(--surface-light); padding: 1rem; border-radius: 8px;">
+                                <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">예상 수익</h4>
+                                <p><strong>RPM 기준 수익:</strong> $${(data.view_count / 1000 * 2.5).toFixed(0)}</p>
+                                <p><strong>CPM 기준 수익:</strong> $${(data.view_count / 1000 * 1.5).toFixed(0)}</p>
+                            </div>
+                            
+                            <div style="background: var(--surface-light); padding: 1rem; border-radius: 8px;">
+                                <h4 style="color: var(--text-secondary); margin-bottom: 0.5rem;">참여도 분석</h4>
+                                <p><strong>댓글 참여율:</strong> ${((data.comment_count / Math.max(data.view_count, 1)) * 100).toFixed(3)}%</p>
+                                <p><strong>총 참여율:</strong> ${(((data.like_count + data.comment_count) / Math.max(data.view_count, 1)) * 100).toFixed(2)}%</p>
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top: 2rem;">
+                            <a href="https://youtube.com/watch?v=${data.video_id}" 
+                               target="_blank" 
+                               class="btn btn-primary" 
+                               style="text-decoration: none; display: inline-flex;">
+                                <i class="fab fa-youtube"></i>
+                                YouTube에서 보기
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('videoModal').style.display = 'block';
+        }
+        
+        // Show video script modal
+        function showVideoScript(data) {
+            console.log('showVideoScript 호출됨:', data);
+            
+            // 현재 스크립트 데이터 저장
+            currentScriptData = data;
+            
+            const scriptModal = document.getElementById('scriptModal');
+            const modalContent = document.getElementById('scriptModalContent');
+            
+            if (!scriptModal || !modalContent) {
+                console.error('모달 요소를 찾을 수 없음');
+                alert('모달을 찾을 수 없습니다.');
+                return;
+            }
+            
+            console.log('모달 내용 업데이트 중...');
+            
+            // 간단한 내용으로 모달 구성
+            let content = `
+                <h2 style="color: #333; margin-bottom: 1rem;">${data.title || '동영상 정보'}</h2>
+                <hr style="margin: 1rem 0;">
+            `;
+            
+            if (data.script) {
+                content += `
+                    <div style="background: #f0f8ff; padding: 1.5rem; border-radius: 8px; margin: 1rem 0;">
+                        <h3 style="color: #2196F3; margin-bottom: 1rem;">✅ 자막을 찾았습니다!</h3>
+                        <p>언어: ${data.language || '자동 감지'} | 길이: ${data.script.length.toLocaleString()}자</p>
+                    </div>
+                `;
+                
+                // 타임스탬프가 있으면 시간별로 구분해서 표시
+                if (data.timestamps && data.timestamps.length > 0) {
+                    content += `
+                        <div style="background: #f8f9fa; padding: 1.5rem; border-radius: 8px; margin: 1rem 0;">
+                            <h3 style="color: #495057; margin-bottom: 1rem; display: flex; align-items: center;">
+                                ⏰ 타임라인별 스크립트 
+                                <span style="background: #6c757d; color: white; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.8rem; margin-left: 0.5rem;">
+                                    ${data.timestamps.length}개 구간
+                                </span>
+                            </h3>
+                            <div style="max-height: 400px; overflow-y: auto; background: white; padding: 1rem; border-radius: 8px; border: 1px solid #dee2e6;">
                     `;
-                }}
-            }} catch (error) {{
-                results.innerHTML = `<p style="color: red;">오류가 발생했습니다: ${{error.message}}</p>`;
-            }}
-        }}
+                    
+                    data.timestamps.forEach((item, index) => {
+                        const minutes = Math.floor(item.start / 60);
+                        const seconds = Math.floor(item.start % 60);
+                        const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                        
+                        content += `
+                            <div class="timestamp-block" style="margin-bottom: 1rem; padding: 1rem; background: ${index % 2 === 0 ? '#ffffff' : '#f8f9fa'}; border-radius: 6px; border-left: 4px solid #007bff; cursor: pointer; transition: all 0.2s ease;" 
+                                 onclick="openYouTubeAt('${data.video_id}', ${Math.floor(item.start)})" 
+                                 onmouseover="this.style.transform='translateX(5px)'; this.style.boxShadow='0 4px 12px rgba(0,123,255,0.2)';" 
+                                 onmouseout="this.style.transform='translateX(0)'; this.style.boxShadow='none';">
+                                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                                    <span style="background: #007bff; color: white; padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.85rem; font-weight: bold;">
+                                        ${timeStr}
+                                    </span>
+                                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                        <button onclick="event.stopPropagation(); copyTimestamp('${timeStr}', \`${item.text.replace(/\`/g, '\\\\`')}\`, '${data.video_id}', ${Math.floor(item.start)})" 
+                                               style="background: #28a745; color: white; border: none; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer;">
+                                            📋
+                                        </button>
+                                        <span style="font-size: 0.8rem; color: #6c757d;">YouTube로 이동</span>
+                                    </div>
+                                </div>
+                                <p style="margin: 0; line-height: 1.7; color: #333; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 1.05rem;">
+                                    ${item.text}
+                                </p>
+                            </div>
+                        `;
+                    });
+                    
+                    content += `
+                            </div>
+                            <div style="margin-top: 1rem; text-align: center;">
+                                <button onclick="copyTimestampScript()" 
+                                       style="background: #17a2b8; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-size: 0.9rem; cursor: pointer; margin: 0.25rem;">
+                                    📋 타임스탬프 포함 복사
+                                </button>
+                                <button onclick="downloadTimestampScript()" 
+                                       style="background: #28a745; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-size: 0.9rem; cursor: pointer; margin: 0.25rem;">
+                                    💾 SRT 파일 다운로드
+                                </button>
+                                <button onclick="downloadScript()" 
+                                       style="background: #6f42c1; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-size: 0.9rem; cursor: pointer; margin: 0.25rem;">
+                                    📄 텍스트 파일
+                                </button>
+                                <button onclick="downloadJSONData()" 
+                                       style="background: #fd7e14; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-size: 0.9rem; cursor: pointer; margin: 0.25rem;">
+                                    🔧 JSON 데이터
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    content += `
+                        <div style="background: #f5f5f5; padding: 1.5rem; border-radius: 8px; margin: 1rem 0;">
+                            <h3 style="color: #666; margin-bottom: 1rem;">📝 전체 스크립트</h3>
+                            <div style="max-height: 400px; overflow-y: auto; background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid #ddd;">
+                                <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.8; color: #333; font-size: 1.05rem;">
+                                    ${data.script.split('.').map((sentence, index) => {
+                                        const trimmed = sentence.trim();
+                                        return trimmed ? `<p style="margin-bottom: 1rem; padding: 0.5rem; background: ${index % 2 === 0 ? '#ffffff' : '#f8f9fa'}; border-radius: 4px;">${trimmed}.</p>` : '';
+                                    }).join('')}
+                                </div>
+                            </div>
+                            <div style="margin-top: 1rem; text-align: center;">
+                                <button onclick="copyFullScript()" 
+                                       style="background: #17a2b8; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-size: 0.9rem; cursor: pointer; margin-right: 0.5rem;">
+                                    📋 전체 복사
+                                </button>
+                                <button onclick="downloadScript()" 
+                                       style="background: #28a745; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-size: 0.9rem; cursor: pointer;">
+                                    💾 다운로드
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }
+            } else {
+                content += `
+                    <div style="background: #f8d7da; padding: 1.5rem; border-radius: 8px; margin: 1rem 0; border: 1px solid #f5c6cb;">
+                        <h3 style="color: #721c24; margin-bottom: 1rem;">❌ 자막이 없습니다</h3>
+                        <p style="color: #721c24; margin: 0;">이 동영상에는 자막이 없거나 접근할 수 없습니다.</p>
+                    </div>
+                `;
+            }
+            
+            if (data.summary) {
+                content += `
+                    <div style="background: #f8f9fa; border: 1px solid #dee2e6; padding: 2rem; border-radius: 8px; margin: 1rem 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <h3 style="color: #495057; margin-bottom: 1.5rem; font-weight: 600;">📋 동영상 분석 결과</h3>
+                        <div style="white-space: pre-wrap; line-height: 1.8; color: #212529; background: white; padding: 1.5rem; border-radius: 6px; border-left: 4px solid #007bff;">
+                            ${data.summary}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            content += `
+                <div style="text-align: center; margin-top: 2rem;">
+                    <a href="https://youtube.com/watch?v=${data.video_id}" 
+                       target="_blank" 
+                       style="background: #ff0000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">
+                        🎥 YouTube에서 보기
+                    </a>
+                    <button onclick="closeScriptModal()" 
+                           style="background: #6c757d; color: white; padding: 12px 24px; border: none; border-radius: 6px; margin-left: 10px; cursor: pointer;">
+                        닫기
+                    </button>
+                </div>
+            `;
+            
+            modalContent.innerHTML = content;
+            
+            console.log('모달 내용 업데이트 완료, 모달 표시');
+            scriptModal.style.display = 'block';
+            console.log('모달 표시 완료');
+        }
+
+        // 현재 스크립트 데이터 저장
+        let currentScriptData = null;
+        
+        // 알림 시스템
+        function showNotification(message, type = 'info') {
+            // 기존 알림 제거
+            const existingNotification = document.querySelector('.notification');
+            if (existingNotification) {
+                existingNotification.remove();
+            }
+            
+            const notification = document.createElement('div');
+            notification.className = 'notification';
+            notification.textContent = message;
+            
+            // 타입별 스타일 설정
+            let backgroundColor, color;
+            switch (type) {
+                case 'success':
+                    backgroundColor = '#28a745';
+                    color = 'white';
+                    break;
+                case 'error':
+                    backgroundColor = '#dc3545';
+                    color = 'white';
+                    break;
+                case 'info':
+                    backgroundColor = '#17a2b8';
+                    color = 'white';
+                    break;
+                default:
+                    backgroundColor = '#6c757d';
+                    color = 'white';
+            }
+            
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: ${backgroundColor};
+                color: ${color};
+                padding: 1rem 1.5rem;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                z-index: 10000;
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                font-size: 0.9rem;
+                max-width: 300px;
+                animation: slideInRight 0.3s ease-out;
+            `;
+            
+            // 애니메이션 스타일 추가
+            if (!document.querySelector('#notification-styles')) {
+                const style = document.createElement('style');
+                style.id = 'notification-styles';
+                style.textContent = `
+                    @keyframes slideInRight {
+                        from {
+                            transform: translateX(100%);
+                            opacity: 0;
+                        }
+                        to {
+                            transform: translateX(0);
+                            opacity: 1;
+                        }
+                    }
+                    @keyframes slideOutRight {
+                        from {
+                            transform: translateX(0);
+                            opacity: 1;
+                        }
+                        to {
+                            transform: translateX(100%);
+                            opacity: 0;
+                        }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+            
+            document.body.appendChild(notification);
+            
+            // 3초 후 자동 제거
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.style.animation = 'slideOutRight 0.3s ease-in forwards';
+                    setTimeout(() => {
+                        if (notification.parentNode) {
+                            notification.remove();
+                        }
+                    }, 300);
+                }
+            }, 3000);
+        }
+        
+        // 스크립트 데이터 업데이트 함수
+        function updateCurrentScriptData(data) {
+            currentScriptData = data;
+        }
+        
+        // 타임스탬프 포함 스크립트 복사
+        function copyTimestampScript() {
+            if (!currentScriptData || !currentScriptData.timestamps) {
+                alert('타임스탬프 데이터가 없습니다.');
+                return;
+            }
+            
+            let text = `${currentScriptData.title}\n`;
+            text += `YouTube: https://youtube.com/watch?v=${currentScriptData.video_id}\n\n`;
+            text += `타임스탬프별 스크립트:\n`;
+            text += `${'='.repeat(50)}\n\n`;
+            
+            currentScriptData.timestamps.forEach(item => {
+                const minutes = Math.floor(item.start / 60);
+                const seconds = Math.floor(item.start % 60);
+                const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                text += `[${timeStr}] ${item.text}\n\n`;
+            });
+            
+            navigator.clipboard.writeText(text).then(() => {
+                // 성공 메시지를 더 예쁘게 표시
+                showNotification('✅ 타임스탬프 포함 스크립트가 복사되었습니다!', 'success');
+            }).catch(() => {
+                showNotification('❌ 복사에 실패했습니다.', 'error');
+            });
+        }
+        
+        // 전체 스크립트 복사
+        function copyFullScript() {
+            if (!currentScriptData || !currentScriptData.script) {
+                showNotification('❌ 복사할 스크립트가 없습니다.', 'error');
+                return;
+            }
+            
+            let text = `${currentScriptData.title}\n`;
+            text += `YouTube: https://youtube.com/watch?v=${currentScriptData.video_id}\n`;
+            text += `언어: ${currentScriptData.language || '알 수 없음'}\n`;
+            text += `${'='.repeat(50)}\n\n`;
+            text += `전체 스크립트:\n\n`;
+            text += `${currentScriptData.script}`;
+            
+            navigator.clipboard.writeText(text).then(() => {
+                showNotification('✅ 스크립트가 복사되었습니다!', 'success');
+            }).catch(() => {
+                showNotification('❌ 복사에 실패했습니다.', 'error');
+            });
+        }
+        
+        // 스크립트 다운로드 (실제 API 사용)
+        function downloadScript() {
+            if (!currentScriptData || !currentScriptData.video_id) {
+                showNotification('❌ 동영상 데이터가 없습니다.', 'error');
+                return;
+            }
+            
+            showNotification('📥 텍스트 파일을 생성하고 있습니다...', 'info');
+            
+            fetch('/api/export_script', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    video_id: currentScriptData.video_id,
+                    export_type: 'txt'
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    showNotification(`❌ ${data.error}`, 'error');
+                    return;
+                }
+                
+                const blob = new Blob([data.content], { type: data.content_type });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = data.filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                showNotification('✅ 텍스트 파일이 다운로드되었습니다!', 'success');
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('❌ 텍스트 파일 생성에 실패했습니다.', 'error');
+            });
+        }
+        
+        // SRT 파일 다운로드 (실제 API 사용)
+        function downloadTimestampScript() {
+            if (!currentScriptData || !currentScriptData.video_id) {
+                showNotification('❌ 동영상 데이터가 없습니다.', 'error');
+                return;
+            }
+            
+            showNotification('📥 SRT 파일을 생성하고 있습니다...', 'info');
+            
+            fetch('/api/export_script', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    video_id: currentScriptData.video_id,
+                    export_type: 'srt'
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    showNotification(`❌ ${data.error}`, 'error');
+                    return;
+                }
+                
+                const blob = new Blob([data.content], { type: data.content_type });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = data.filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                showNotification('✅ SRT 파일이 다운로드되었습니다!', 'success');
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('❌ SRT 파일 생성에 실패했습니다.', 'error');
+            });
+        }
+        
+        // SRT 시간 포맷 함수
+        function formatSrtTime(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            const ms = Math.floor((seconds % 1) * 1000);
+            
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+        }
+
+        // YouTube 특정 시점으로 이동
+        function openYouTubeAt(videoId, startTime) {
+            const url = `https://youtube.com/watch?v=${videoId}&t=${startTime}s`;
+            showNotification(`🎬 YouTube로 이동합니다 (${Math.floor(startTime/60)}:${(startTime%60).toString().padStart(2, '0')})`, 'info');
+            window.open(url, '_blank');
+        }
+        
+        // 개별 타임스탬프 복사
+        function copyTimestamp(timeStr, text, videoId, startTime) {
+            const content = `[${timeStr}] ${text}\n\nYouTube: https://youtube.com/watch?v=${videoId}&t=${startTime}s`;
+            
+            navigator.clipboard.writeText(content).then(() => {
+                showNotification('✅ 타임스탬프가 복사되었습니다!', 'success');
+            }).catch(() => {
+                showNotification('❌ 복사에 실패했습니다.', 'error');
+            });
+        }
+        
+        // JSON 데이터 다운로드 (개발자용)
+        function downloadJSONData() {
+            if (!currentScriptData || !currentScriptData.video_id) {
+                showNotification('❌ 동영상 데이터가 없습니다.', 'error');
+                return;
+            }
+            
+            showNotification('📥 JSON 데이터를 생성하고 있습니다...', 'info');
+            
+            fetch('/api/export_script', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    video_id: currentScriptData.video_id,
+                    export_type: 'json'
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    showNotification(`❌ ${data.error}`, 'error');
+                    return;
+                }
+                
+                const blob = new Blob([JSON.stringify(data.content, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = data.filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                showNotification('✅ JSON 데이터가 다운로드되었습니다!', 'success');
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showNotification('❌ JSON 데이터 생성에 실패했습니다.', 'error');
+            });
+        }
+
+        // Close script modal
+        function closeScriptModal() {
+            document.getElementById('scriptModal').style.display = 'none';
+        }
     </script>
 </body>
-</html>'''
+</html>
+    '''
 
-@app.route('/api/analyze', methods=['POST'])
-@login_required
-def api_analyze():
-    # 사용량 체크
-    if not check_usage_limit(current_user, 'analyze_channel'):
-        return jsonify({'error': '월 사용량을 초과했습니다. 요금제를 업그레이드해주세요.'})
-    
-    data = request.get_json()
-    channel_query = data.get('channel_query', '')
-    
+@app.route('/analyze', methods=['POST'])
+def analyze():
     try:
-        # 채널 ID 찾기
-        channel_id = None
-        if 'youtube.com' in channel_query or 'youtu.be' in channel_query:
-            if '/@' in channel_query:
-                handle = channel_query.split('/@')[-1].split('/')[0]
-                search_response = youtube.search().list(
-                    q=handle,
-                    type='channel',
-                    part='snippet',
-                    maxResults=1
-                ).execute()
-                if search_response['items']:
-                    channel_id = search_response['items'][0]['snippet']['channelId']
-            elif '/channel/' in channel_query:
-                channel_id = channel_query.split('/channel/')[-1].split('/')[0]
-        else:
-            search_response = youtube.search().list(
-                q=channel_query,
-                type='channel',
-                part='snippet',
-                maxResults=1
-            ).execute()
-            if search_response['items']:
-                channel_id = search_response['items'][0]['snippet']['channelId']
+        data = request.get_json()
+        channel_query = data.get('channel_query', '')
+        max_videos = data.get('max_videos', 50)
         
+        if not channel_query:
+            return jsonify({'error': '채널 정보가 필요합니다.'})
+        
+        # 채널 ID 검색
+        channel_id = analyzer.search_channel(channel_query)
         if not channel_id:
             return jsonify({'error': '채널을 찾을 수 없습니다.'})
         
-        # 채널 정보 가져오기
-        channel_response = youtube.channels().list(
-            part='snippet,statistics',
-            id=channel_id
-        ).execute()
+        # 채널 분석 (사용자가 설정한 동영상 수로)
+        result = analyzer.analyze_channel_with_count(channel_id, max_videos)
+        if not result:
+            return jsonify({'error': '채널 분석 중 오류가 발생했습니다.'})
         
-        if not channel_response['items']:
-            return jsonify({'error': '채널 정보를 가져올 수 없습니다.'})
-        
-        channel_info = channel_response['items'][0]
-        
-        # 사용량 로그 기록
-        log_usage(current_user, 'analyze_channel', channel_id)
-        
-        return jsonify({
-            'channel_id': channel_id,
-            'channel_name': channel_info['snippet']['title'],
-            'subscriber_count': int(channel_info['statistics'].get('subscriberCount', 0)),
-            'view_count': int(channel_info['statistics'].get('viewCount', 0)),
-            'video_count': int(channel_info['statistics'].get('videoCount', 0)),
-        })
+        return jsonify(result)
         
     except Exception as e:
         return jsonify({'error': f'분석 중 오류 발생: {str(e)}'})
 
-@app.route('/upgrade')
-@login_required
-def upgrade():
-    return '''<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <title>요금제 업그레이드</title>
-    <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #f8f9fa; margin: 0; padding: 2rem; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .pricing-card { background: white; border-radius: 10px; padding: 2rem; margin: 1rem; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .price { font-size: 2rem; color: #007bff; font-weight: bold; margin: 1rem 0; }
-        .btn { padding: 1rem 2rem; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1.1rem; }
-        .btn:hover { background: #0056b3; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1 style="text-align: center;">💎 요금제 업그레이드</h1>
+@app.route('/analyze_video', methods=['POST'])
+def analyze_video():
+    try:
+        data = request.get_json()
+        video_id = data.get('video_id', '')
         
-        <div class="pricing-card">
-            <h3>Pro Plan</h3>
-            <div class="price">₩19,900 / 월</div>
-            <ul style="text-align: left; margin: 2rem 0;">
-                <li>무제한 채널 분석</li>
-                <li>AI 트렌드 예측</li>
-                <li>상세 리포트</li>
-                <li>이메일 지원</li>
-            </ul>
-            <button class="btn" onclick="upgrade('pro')">Pro로 업그레이드</button>
-        </div>
+        if not video_id:
+            return jsonify({'error': '동영상 ID가 필요합니다.'})
         
-        <div class="pricing-card">
-            <h3>Agency Plan</h3>
-            <div class="price">₩99,900 / 월</div>
-            <ul style="text-align: left; margin: 2rem 0;">
-                <li>Pro 기능 모두 포함</li>
-                <li>다중 채널 관리</li>
-                <li>API 접근</li>
-                <li>전담 지원</li>
-            </ul>
-            <button class="btn" onclick="upgrade('agency')">Agency로 업그레이드</button>
-        </div>
-    </div>
-    
-    <script>
-        function upgrade(plan) {
-            alert(`${plan.toUpperCase()} 요금제로 업그레이드하시겠습니까?\\n\\n실제 결제는 아직 구현되지 않았습니다.\\n데모 목적으로 즉시 업그레이드됩니다.`);
-            
-            fetch('/api/upgrade', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ plan: plan })
-            }).then(response => response.json()).then(data => {
-                if (data.success) {
-                    alert('업그레이드가 완료되었습니다!');
-                    window.location.href = '/dashboard';
-                }
-            });
+        # 개별 동영상 정보 가져오기
+        video_response = analyzer.youtube.videos().list(
+            part='snippet,statistics,contentDetails',
+            id=video_id
+        ).execute()
+        
+        if not video_response['items']:
+            return jsonify({'error': '동영상을 찾을 수 없습니다.'})
+        
+        video = video_response['items'][0]
+        result = {
+            'video_id': video_id,
+            'title': video['snippet']['title'],
+            'description': video['snippet']['description'],
+            'published_at': video['snippet']['publishedAt'],
+            'view_count': int(video['statistics'].get('viewCount', 0)),
+            'like_count': int(video['statistics'].get('likeCount', 0)),
+            'comment_count': int(video['statistics'].get('commentCount', 0)),
+            'duration': video['contentDetails']['duration']
         }
-    </script>
-</body>
-</html>'''
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({'error': f'동영상 분석 중 오류 발생: {str(e)}'})
 
-@app.route('/api/upgrade', methods=['POST'])
-@login_required
-def api_upgrade():
-    data = request.get_json()
-    plan = data.get('plan')
-    
-    if plan in ['pro', 'agency']:
-        current_user.plan = plan
-        current_user.last_payment = datetime.utcnow()
-        db.session.commit()
-        return jsonify({'success': True})
-    
-    return jsonify({'error': '잘못된 요금제입니다.'})
+@app.route('/get_video_script', methods=['POST'])
+def get_video_script():
+    try:
+        print("get_video_script 요청 받음")
+        data = request.get_json()
+        video_id = data.get('video_id', '')
+        print(f"비디오 ID: {video_id}")
+        
+        if not video_id:
+            print("비디오 ID 없음")
+            return jsonify({'error': '동영상 ID가 필요합니다.'})
+        
+        # 동영상 정보 가져오기 (더 많은 정보 포함)
+        print("YouTube API로 비디오 정보 요청 중...")
+        video_response = analyzer.youtube.videos().list(
+            part='snippet,statistics,contentDetails',
+            id=video_id
+        ).execute()
+        
+        if not video_response['items']:
+            print("비디오를 찾을 수 없음")
+            return jsonify({'error': '동영상을 찾을 수 없습니다.'})
+        
+        video = video_response['items'][0]
+        title = video['snippet']['title']
+        print(f"비디오 제목: {title}")
+        
+        # 간단한 자막 검색 및 요약 생성
+        script = None
+        summary = None
+        used_language = None
+        timestamps = None
+        
+        try:
+            print("자막 검색 시작...")
+            
+            # 자막 검색 시도
+            transcript_data = None
+            try:
+                # 한국어 우선
+                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko'])
+                used_language = "한국어"
+            except:
+                try:
+                    # 영어
+                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                    used_language = "영어"
+                except:
+                    try:
+                        # 아무 언어
+                        transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+                        used_language = "자동 감지"
+                    except:
+                        transcript_data = None
+            
+            if transcript_data:
+                print(f"자막 발견! 언어: {used_language}")
+                # 자막을 텍스트로 변환
+                script_text = ' '.join([item['text'] for item in transcript_data])
+                script = script_text
+                
+                # 타임스탬프 정보도 함께 저장
+                timestamps = [{"start": item.get('start', 0), "text": item['text']} for item in transcript_data]
+                
+                # 간단한 요약 생성
+                if len(script_text) > 200:
+                    summary = create_simple_summary(script_text, title, video['snippet'], video['statistics'])
+                else:
+                    summary = f"전체 내용:\n{script_text}"
+                print(f"요약 생성 완료 (스크립트 길이: {len(script_text)}자)")
+            else:
+                print("자막을 찾을 수 없음")
+                
+        except Exception as e:
+            print(f"자막 처리 중 오류: {e}")
+            script = None
+            summary = None
+        
+        # 자막이 없을 때도 유용한 정보 제공
+        if not script:
+            print("자막이 없으므로 메타데이터 기반 요약 생성")
+            snippet = video.get('snippet', {})
+            stats = video.get('statistics', {})
+            content_details = video.get('contentDetails', {})
+            
+            # 통계 정보
+            view_count = int(stats.get('viewCount', 0))
+            like_count = int(stats.get('likeCount', 0))
+            comment_count = int(stats.get('commentCount', 0))
+            
+            # 메타데이터
+            description = snippet.get('description', '')[:400]
+            published = snippet.get('publishedAt', '')
+            tags = snippet.get('tags', [])
+            duration = content_details.get('duration', 'N/A')
+            
+            summary_parts = []
+            summary_parts.append("=== 동영상 정보 ===")
+            summary_parts.append("")
+            summary_parts.append(f"제목: {title}")
+            summary_parts.append(f"조회수: {view_count:,}회")
+            summary_parts.append(f"좋아요: {like_count:,}개") 
+            summary_parts.append(f"댓글: {comment_count:,}개")
+            summary_parts.append(f"영상 길이: {duration}")
+            
+            if tags:
+                summary_parts.append(f"태그: {', '.join(tags[:5])}")
+            
+            if description:
+                summary_parts.append("")
+                summary_parts.append("=== 동영상 설명 ===")
+                summary_parts.append(description)
+                if len(snippet.get('description', '')) > 400:
+                    summary_parts.append("...")
+            
+            summary_parts.append("")
+            summary_parts.append("=== 분석 결과 ===")
+            summary_parts.append("• 이 동영상에는 자막이 없습니다")
+            summary_parts.append("• 위 정보는 YouTube API에서 가져온 메타데이터입니다")
+            summary_parts.append("• 실제 내용은 YouTube에서 직접 시청하세요")
+            
+            summary = '\n'.join(summary_parts)
+        
+        result = {
+            'video_id': video_id,
+            'title': title,
+            'script': script,
+            'summary': summary,
+            'language': used_language if script else None,
+            'timestamps': timestamps if script else None
+        }
+        
+        print(f"응답 준비 완료: script={bool(script)}, summary={bool(summary)}")
+        return jsonify(result)
+        
+    except Exception as e:
+        error_msg = str(e)
+        # 인코딩 오류 메시지를 사용자 친화적으로 변경
+        if 'codec' in error_msg or 'encode' in error_msg:
+            error_msg = "텍스트 인코딩 처리 중 오류가 발생했습니다. 다른 영상을 시도해보세요."
+        elif 'transcript' in error_msg.lower():
+            error_msg = "이 영상에는 자막이 없거나 접근할 수 없습니다."
+        else:
+            error_msg = f"스크립트 처리 중 오류: {error_msg}"
+            
+        print(f"스크립트 가져오기 중 오류: {str(e)}")
+        return jsonify({'error': error_msg})
 
-# 데이터베이스 초기화 함수
-def create_tables():
-    db.create_all()
+@app.route('/api/korean_trends', methods=['GET'])
+def korean_trends():
+    """한국어 트렌드 분석 API"""
+    try:
+        trends = trend_analyzer.get_trending_keywords()
+        return jsonify(trends)
+    except Exception as e:
+        return jsonify({'error': f'트렌드 분석 중 오류 발생: {str(e)}'})
+
+@app.route('/api/content_recommendations', methods=['POST'])
+def content_recommendations():
+    """AI 콘텐츠 추천 API"""
+    try:
+        data = request.get_json()
+        channel_category = data.get('category', '일반')
+        subscriber_count = data.get('subscriber_count', 0)
+        
+        # 트렌딩 키워드 가져오기
+        trends = trend_analyzer.get_trending_keywords()
+        trending_keywords = trends['trending_keywords']
+        
+        # 콘텐츠 추천 생성
+        recommendations = content_engine.generate_content_ideas(
+            channel_category, trending_keywords, subscriber_count
+        )
+        
+        return jsonify(recommendations)
+    except Exception as e:
+        return jsonify({'error': f'콘텐츠 추천 중 오류 발생: {str(e)}'})
+
+@app.route('/api/competitor_analysis', methods=['POST'])
+def competitor_analysis():
+    """경쟁사 분석 API"""
+    try:
+        data = request.get_json()
+        main_channel = data.get('main_channel')
+        competitor_channels = data.get('competitor_channels', [])
+        
+        if not main_channel:
+            return jsonify({'error': '메인 채널 정보가 필요합니다.'})
+        
+        analysis = competitor_analyzer.compare_channels(main_channel, competitor_channels)
+        return jsonify(analysis)
+    except Exception as e:
+        return jsonify({'error': f'경쟁사 분석 중 오류 발생: {str(e)}'})
+
+@app.route('/api/sentiment_analysis', methods=['POST'])
+def sentiment_analysis():
+    """댓글 감정 분석 API"""
+    try:
+        data = request.get_json()
+        comments = data.get('comments', [])
+        
+        analysis = sentiment_analyzer.analyze_comments_sentiment(comments)
+        return jsonify(analysis)
+    except Exception as e:
+        return jsonify({'error': f'감정 분석 중 오류 발생: {str(e)}'})
+
+@app.route('/api/export_script', methods=['POST'])
+def export_script():
+    """스크립트 내보내기 API"""
+    try:
+        data = request.get_json()
+        video_id = data.get('video_id', '')
+        export_type = data.get('export_type', 'txt')  # txt, srt, json
+        
+        if not video_id:
+            return jsonify({'error': '동영상 ID가 필요합니다.'})
+        
+        # 스크립트 데이터 가져오기
+        script_data = get_script_data(video_id)
+        
+        if export_type == 'srt':
+            # SRT 파일 생성
+            srt_content = generate_srt_content(script_data)
+            return jsonify({
+                'content': srt_content,
+                'filename': f"{script_data.get('title', 'video')}_subtitles.srt",
+                'content_type': 'text/plain'
+            })
+        elif export_type == 'json':
+            return jsonify({
+                'content': script_data,
+                'filename': f"{script_data.get('title', 'video')}_data.json",
+                'content_type': 'application/json'
+            })
+        else:
+            # 기본 텍스트 파일
+            text_content = generate_text_content(script_data)
+            return jsonify({
+                'content': text_content,
+                'filename': f"{script_data.get('title', 'video')}_script.txt",
+                'content_type': 'text/plain'
+            })
+            
+    except Exception as e:
+        return jsonify({'error': f'내보내기 중 오류 발생: {str(e)}'})
+
+def get_script_data(video_id):
+    """비디오 스크립트 데이터 가져오기 (안전한 인코딩 처리)"""
+    try:
+        # YouTube API로 비디오 정보 가져오기
+        video_response = analyzer.youtube.videos().list(
+            part='snippet,statistics,contentDetails',
+            id=video_id
+        ).execute()
+        
+        if not video_response['items']:
+            return None
+        
+        video = video_response['items'][0]
+        title = video['snippet']['title']
+        
+        # 문자열 안전화 함수
+        def safe_encode_text(text):
+            if isinstance(text, str):
+                # UTF-8로 안전하게 인코딩하고 문제 문자 제거
+                safe_text = text.encode('utf-8', errors='ignore').decode('utf-8')
+                # 문제가 될 수 있는 특수 문자들을 제거
+                safe_text = re.sub(r'[^\w\s가-힣.,!?()-]', ' ', safe_text)
+                return safe_text.strip()
+            return str(text)
+        
+        # 자막 가져오기
+        script = None
+        timestamps = None
+        used_language = None
+        transcript_data = None
+        
+        print(f"자막 검색 시작 - 비디오 ID: {video_id}")
+        
+        try:
+            transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko'])
+            used_language = "한국어"
+            print("한국어 자막 발견")
+        except Exception as e1:
+            print(f"한국어 자막 없음: {str(e1)}")
+            try:
+                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+                used_language = "영어"
+                print("영어 자막 발견")
+            except Exception as e2:
+                print(f"영어 자막 없음: {str(e2)}")
+                try:
+                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+                    used_language = "자동 감지"
+                    print("자동 감지 자막 발견")
+                except Exception as e3:
+                    print(f"모든 자막 검색 실패: {str(e3)}")
+                    transcript_data = None
+        
+        if transcript_data:
+            try:
+                # 안전하게 텍스트 처리
+                safe_texts = []
+                safe_timestamps = []
+                
+                for item in transcript_data:
+                    safe_text = safe_encode_text(item.get('text', ''))
+                    if safe_text:  # 빈 텍스트 제외
+                        safe_texts.append(safe_text)
+                        safe_timestamps.append({
+                            "start": float(item.get('start', 0)), 
+                            "text": safe_text
+                        })
+                
+                script = ' '.join(safe_texts)
+                timestamps = safe_timestamps
+                print(f"자막 처리 완료 - {len(safe_timestamps)}개 구간")
+                
+            except Exception as text_error:
+                print(f"자막 텍스트 처리 오류: {str(text_error)}")
+                script = None
+                timestamps = None
+        
+        # 제목도 안전하게 처리
+        safe_title = safe_encode_text(title)
+        
+        return {
+            'video_id': video_id,
+            'title': safe_title,
+            'script': script,
+            'timestamps': timestamps,
+            'language': used_language
+        }
+        
+    except Exception as e:
+        print(f"스크립트 데이터 가져오기 오류: {str(e)}")
+        return {
+            'video_id': video_id,
+            'title': '제목을 가져올 수 없음',
+            'script': None,
+            'timestamps': None,
+            'language': None,
+            'error': str(e)
+        }
+
+def generate_srt_content(script_data):
+    """SRT 파일 내용 생성"""
+    if not script_data or not script_data.get('timestamps'):
+        return ""
+    
+    srt_content = ""
+    timestamps = script_data['timestamps']
+    
+    for index, item in enumerate(timestamps):
+        start_time = format_srt_time(item['start'])
+        # 다음 타임스탬프가 있으면 그 시간을, 없으면 +5초로 설정
+        if index + 1 < len(timestamps):
+            end_time = format_srt_time(timestamps[index + 1]['start'])
+        else:
+            end_time = format_srt_time(item['start'] + 5)
+        
+        srt_content += f"{index + 1}\n"
+        srt_content += f"{start_time} --> {end_time}\n"
+        srt_content += f"{item['text']}\n\n"
+    
+    return srt_content
+
+def format_srt_time(seconds):
+    """SRT 시간 포맷"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
+
+def generate_text_content(script_data):
+    """텍스트 파일 내용 생성"""
+    if not script_data:
+        return ""
+    
+    content = f"{script_data.get('title', 'Unknown Video')}\n"
+    content += f"YouTube: https://youtube.com/watch?v={script_data.get('video_id', '')}\n"
+    content += f"언어: {script_data.get('language', '알 수 없음')}\n"
+    content += "=" * 50 + "\n\n"
+    
+    if script_data.get('timestamps'):
+        content += "타임스탬프별 스크립트:\n\n"
+        for item in script_data['timestamps']:
+            minutes = int(item['start'] // 60)
+            seconds = int(item['start'] % 60)
+            time_str = f"{minutes}:{seconds:02d}"
+            content += f"[{time_str}] {item['text']}\n\n"
+    elif script_data.get('script'):
+        content += "전체 스크립트:\n\n"
+        content += script_data['script']
+    else:
+        content += "스크립트를 찾을 수 없습니다."
+    
+    return content
+
+@app.route('/api/advanced_analytics', methods=['POST'])
+def advanced_analytics():
+    """통합 고급 분석 API"""
+    try:
+        data = request.get_json()
+        channel_data = data.get('channel_data')
+        recent_videos = data.get('recent_videos', [])
+        
+        if not channel_data:
+            return jsonify({'error': '채널 데이터가 필요합니다.'})
+        
+        # 트렌드 분석
+        trends = trend_analyzer.analyze_channel_trends(
+            channel_data.get('channel_name', ''), recent_videos
+        )
+        
+        # 콘텐츠 추천
+        recommendations = content_engine.generate_content_ideas(
+            '일반', trends['trending_keywords'], 
+            channel_data.get('subscriber_count', 0)
+        )
+        
+        # 가상의 댓글 샘플로 감정 분석 (실제로는 YouTube API로 댓글 수집)
+        sample_comments = [
+            "정말 유용한 영상이네요!", "감사합니다", "최고에요", 
+            "별로네요", "도움이 되었습니다", "구독했어요"
+        ]
+        sentiment = sentiment_analyzer.analyze_comments_sentiment(sample_comments)
+        
+        return jsonify({
+            'trends': trends,
+            'content_recommendations': recommendations,
+            'sentiment_analysis': sentiment,
+            'success': True
+        })
+    except Exception as e:
+        return jsonify({'error': f'고급 분석 중 오류 발생: {str(e)}'})
 
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
+    port = int(os.environ.get('PORT', 8080))
+    debug_mode = os.environ.get('FLASK_ENV') != 'production'
     
     print("=" * 60)
-    print("YouTube Analytics Pro - 회원가입/결제 시스템 포함")
+    print("YouTube Analytics Studio 시작")
     print("=" * 60)
-    print("주소: http://localhost:8000")
-    print("기능: 회원가입, 로그인, 사용량 제한, 요금제")
+    print(f"주소: http://localhost:{port}")
+    print("프리미엄 분석 및 상세 리포트")
     print("=" * 60)
     
-    app.run(debug=True, host='0.0.0.0', port=8000)
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
